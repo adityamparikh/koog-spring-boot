@@ -16,7 +16,7 @@ OpenAI executor) to turn conversational requests into safe, auditable money move
 - Migrations: Flyway (versioned SQL migrations)
 - Messaging: none yet
 - Testing DB: Testcontainers (PostgreSQL) for integration tests
-- AI / Agents: Koog (latest stable) — `koog-spring-boot-starter` plus `koog-agents`, `agents-tools`, `prompt-executor-openai-client`; Spring AI integration (`koog-spring-ai-starter-model-chat`) added in the final step
+- AI / Agents: Koog (latest stable) — `koog-spring-boot-starter` with a `MultiLLMPromptExecutor` over **Anthropic** (Sonnet 5 default, Opus 4.8 for hard calls) and **OpenAI** (`gpt-5.4`) as an automatic error-fallback; plus `koog-agents`, `agents-tools`, and the Anthropic + OpenAI prompt-executor clients. Spring AI integration (`koog-spring-ai-starter-model-chat`) added in the final step
 - JSON: Jackson 2 (`com.fasterxml.jackson.module:jackson-module-kotlin`) — matches Boot 3.5.x
 - API docs: springdoc-openapi (version compatible with Boot 3.5.x) with Swagger UI
 - Testing: JUnit 5, `kotlin-test-junit5`, `spring-boot-starter-test`, Testcontainers (Postgres, for integration tests)

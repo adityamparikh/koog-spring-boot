@@ -129,19 +129,24 @@ field/path variable) — rather than derived from a security context.
 
 #### FR-06: Koog Spring Boot starter
 Add `ai.koog:koog-spring-boot-starter` (latest stable) to the version catalog. Configure
-the OpenAI client via `application.properties` (`ai.koog.openai.enabled=true`,
-`ai.koog.openai.api-key=${OPENAI_API_KEY}`). API key supplied via env var; never
-committed. Also add `ai.koog:agents-test` as a `testImplementation` so agent tests run
-against a **mock executor** (`getMockExecutor`) from this step onward — no test hits the
-real OpenAI API.
+**both** the Anthropic and OpenAI clients via `application.properties`
+(`ai.koog.anthropic.enabled=true`, `ai.koog.anthropic.api-key=${ANTHROPIC_API_KEY}`;
+`ai.koog.openai.enabled=true`, `ai.koog.openai.api-key=${OPENAI_API_KEY}`). API keys supplied
+via env vars; never committed. The starter exposes `anthropicExecutor`, `openAIExecutor`, and
+a combined **`multiLLMPromptExecutor`** bean. Also add `ai.koog:agents-test` as a
+`testImplementation` so agent tests run against a **mock executor** (`getMockExecutor`) from
+this step onward — no test hits a real LLM API.
 
 #### FR-07: Agent service skeleton
-Inject the auto-configured OpenAI `PromptExecutor` bean. Add an `AgentService` that
-constructs an `AIAgent` (prompt executor + the **`gpt-5.4`** model from `OpenAIModels`,
-configurable + a banking-assistant system prompt) and a `/api/v1/agent/chat` endpoint that
-sends a user message and returns the agent's text reply **plus a `conversationId`** for
-follow-up turns (see FR-10). The acting user (`accountId`) is supplied explicitly
-(`X-User-Id` header / request field). No tools yet.
+Inject the auto-configured **`multiLLMPromptExecutor`** bean. Add an `AgentService` that
+constructs an `AIAgent` over it, defaulting to **Anthropic Sonnet 5** (`AnthropicModels`) and
+using **Opus 4.8** for complex turns; the model is configurable. Wrap execution in an
+**automatic error-fallback**: if the Anthropic call errors or the provider is unavailable,
+retry the same prompt on **OpenAI `gpt-5.4`** (`OpenAIModels`). Expose a `/api/v1/agent/chat`
+endpoint that sends a user message and returns the agent's text reply **plus a
+`conversationId`** for follow-up turns (see FR-10). The acting user (`accountId`) is supplied
+explicitly (`X-User-Id` header / request field). No tools yet. (Exact `AnthropicModels` /
+`OpenAIModels` enum names confirmed against Koog docs at implementation.)
 
 ### Step 3 — `step3-tools`
 
@@ -276,7 +281,7 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - [ ] AC-08: Unit + integration tests (Testcontainers Postgres) cover transfer success, insufficient funds, unknown party, ambiguous lookup, and concurrency.
 
 **Step 2**
-- [ ] AC-09: App starts with the Koog Spring Boot starter and OpenAI configured from `OPENAI_API_KEY`.
+- [ ] AC-09: App starts with the Koog Spring Boot starter and **both** providers configured (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`); the `multiLLMPromptExecutor` bean is available.
 - [ ] AC-10: `POST /api/v1/agent/chat` returns an LLM text reply (no tools yet).
 
 **Step 3**
@@ -313,6 +318,7 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - [ ] AC-25: Every library version is declared in `gradle/libs.versions.toml` at the latest stable compatible version.
 - [ ] AC-26: All Koog-related code (from step 2 on) carries teaching comments — KDoc explaining the concept, inline `//` comments at each Koog call site, and a `docs.koog.ai` link — at every Koog usage site (agents, tools, events, strategy, checkpointing, observability, rollback, compression, Spring AI).
 - [ ] AC-27: On completion (after step 10), a README usage guide documents how to run the app and walk through each scenario (happy-path transfer, ambiguous recipient, insufficient-balance cap-and-offer, undo/rollback, checkpoint resume, observability) with concrete example requests.
+- [ ] AC-28: Multi-LLM fallback — the agent defaults to Anthropic Sonnet 5 (Opus 4.8 for complex turns); when the Anthropic client errors, the same prompt completes via OpenAI `gpt-5.4` (verified with an `agents-test` mock that fails the Anthropic client).
 
 ## Technical Scope
 
@@ -348,7 +354,7 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - Koog `agents-test` → deterministic agent/tool/strategy tests (from step 2 onward).
 
 ## Non-Functional Requirements
-- **Security:** `OPENAI_API_KEY` (and any DB creds) come from env/config, never committed.
+- **Security:** `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (and any DB creds) come from env/config, never committed.
   Money-moving endpoints validate inputs; note that authentication is not yet in scope
   (flagged in `docs/project.md`).
 - **Correctness:** money uses `BigDecimal` mapped to SQL `NUMERIC`; no floating-point money
@@ -400,7 +406,11 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
   to the latest version compatible with Boot 3.5.x.
 
 - **OQ-3 → RESOLVED:** Retain the **Java 25** toolchain — Spring Boot 3.5.x supports Java 25.
-- **OQ-4 → RESOLVED:** Pin the OpenAI model to **`gpt-5.4`** (via `OpenAIModels`), configurable.
+- **OQ-4 → RESOLVED (updated):** Use Koog's **`MultiLLMPromptExecutor`** with **Anthropic
+  Sonnet 5** as the default model and **Opus 4.8** for complex turns (e.g. the step-4
+  strategy), plus an **automatic error-fallback to OpenAI `gpt-5.4`** (retry wrapper: try
+  Anthropic → on error/unavailable, retry the same prompt on OpenAI). Requires both
+  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Models configurable.
 - **OQ-5 → RESOLVED:** Step 6 exports via **OpenTelemetry (OTLP)** to the Grafana
   **LGTM** stack (`grafana/otel-lgtm` all-in-one container: Loki, Grafana, Tempo, Mimir)
   in docker-compose.
@@ -441,3 +451,4 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 | 2026-07-01 | Added Koog testing framework (`ai.koog:agents-test`) to the spec: NFR testability, step-2 dependency, step-4 strategy graph assertions, and step-9 coverage. |
 | 2026-07-01 | Added convention: Koog-related code (step 2 on) must carry teaching comments — KDoc + inline step comments + `docs.koog.ai` links (NFR + AC-26). |
 | 2026-07-01 | Added final deliverable: README usage guide with runnable scenario walkthroughs on completion (NFR + AC-27). |
+| 2026-07-01 | Switched LLM setup to `MultiLLMPromptExecutor`: Anthropic Sonnet 5 default + Opus 4.8 for hard calls, automatic error-fallback to OpenAI `gpt-5.4` (updates OQ-4, FR-06/07, AC-09; adds AC-28). |
