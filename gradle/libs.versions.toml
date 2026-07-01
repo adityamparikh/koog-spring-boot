@@ -1,0 +1,11 @@
+[versions]
+kotlin = "2.3.21"
+koog = "1.0.0"
+
+[libraries]
+koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
+koog-tools = { module = "ai.koog:agents-tools", version.ref = "koog" }
+koog-executor-openai-client = { module = "ai.koog:prompt-executor-openai-client", version.ref = "koog" }
+
+[plugins]
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
