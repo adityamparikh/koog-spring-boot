@@ -1,4 +1,4 @@
--- Money-transfer domain schema (step 1). Currency is EUR throughout; money is NUMERIC(19,2).
+-- Money-transfer domain schema (step 1). Currency is USD throughout; money is NUMERIC(19,2).
 
 -- An account is a person's profile + wallet, and the single source of truth for their
 -- display name and phone (contacts reference it rather than duplicating it).
@@ -7,7 +7,7 @@ CREATE TABLE account (
     first_name   TEXT           NOT NULL,
     last_name    TEXT,
     phone_number TEXT,
-    currency     TEXT           NOT NULL DEFAULT 'EUR',
+    currency     TEXT           NOT NULL DEFAULT 'USD',
     balance      NUMERIC(19, 2) NOT NULL CHECK (balance >= 0)
 );
 
@@ -28,7 +28,7 @@ CREATE TABLE transfer (
     sender_account_id    BIGINT         NOT NULL REFERENCES account (id),
     recipient_account_id BIGINT         NOT NULL REFERENCES account (id),
     amount               NUMERIC(19, 2) NOT NULL CHECK (amount > 0),
-    currency             TEXT           NOT NULL DEFAULT 'EUR',
+    currency             TEXT           NOT NULL DEFAULT 'USD',
     purpose              TEXT,
     status               TEXT           NOT NULL,
     created_at           TIMESTAMPTZ    NOT NULL DEFAULT now()

@@ -54,7 +54,7 @@ See **[docs/data-model.md](docs/data-model.md)** for the full ER diagram and rel
 ## Seed data
 Accounts (profile + wallet):
 
-| Account id | Name | Balance (EUR) | In user 1's contacts? |
+| Account id | Name | Balance (USD) | In user 1's contacts? |
 |-----------:|------|--------------:|-----------------------|
 | 1 | Demo User | 1000.00 | — (the demo sender) |
 | 2 | Alice Smith | 500.00 | yes |
@@ -87,7 +87,7 @@ curl -s "http://localhost:8080/api/v1/contacts?name=Daniel" -H "X-User-Id: 1"
 curl -s http://localhost:8080/api/v1/accounts/1/balance   # → 1000.00
 ```
 
-**4. Happy-path transfer (€100 to Alice's account, id 2)**
+**4. Happy-path transfer ($100 to Alice's account, id 2)**
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/transfers \
   -H "X-User-Id: 1" -H "Content-Type: application/json" \
@@ -206,7 +206,7 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
   -H "X-User-Id: 1" -H "Content-Type: application/json" \
   -d '{"answer": "Daniel Craig"}'
 # → {"type":"CONFIRMATION","reply":"Please confirm …","conversationId":"<id>",
-#     "transferSummary":"Send €50 to Daniel Craig for \"dinner\""}
+#     "transferSummary":"Send $50 to Daniel Craig for \"dinner\""}
 ```
 
 **10. Confirm in natural language → the transfer executes**
@@ -214,7 +214,7 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
 curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
   -H "X-User-Id: 1" -H "Content-Type: application/json" \
   -d '{"answer": "yeah go ahead"}'
-# → {"type":"ANSWER","reply":"Done — sent €50 to Daniel Craig.","conversationId":"<id>"}
+# → {"type":"ANSWER","reply":"Done — sent $50 to Daniel Craig.","conversationId":"<id>"}
 # (reply "no"/"cancel" instead → nothing is sent)
 ```
 
@@ -231,11 +231,11 @@ send instead (**you pick the amount**, up to your balance). The domain still gua
 
 **11. Ask to send more than your balance**
 ```bash
-# 1) Over-balance request. Account 2 (Alice) has €500.
+# 1) Over-balance request. Account 2 (Alice) has $500.
 curl -s -X POST http://localhost:8080/api/v1/agent/chat \
   -H "X-User-Id: 2" -H "Content-Type: application/json" \
   -d '{"message": "send 5000 euros to Charlie"}'
-# → {"type":"ANSWER","reply":"You have €500 … how much would you like to send, up to €500?",
+# → {"type":"ANSWER","reply":"You have $500 … how much would you like to send, up to $500?",
 #     "conversationId":"<id>"}   (nothing is staged — you choose the amount)
 
 # 2) Give a smaller amount. This is a normal conversational turn (/chat, not /reply),
@@ -243,13 +243,13 @@ curl -s -X POST http://localhost:8080/api/v1/agent/chat \
 curl -s -X POST http://localhost:8080/api/v1/agent/chat \
   -H "X-User-Id: 2" -H "Content-Type: application/json" \
   -d '{"message": "send 200 instead", "conversationId": "<id>"}'
-# → {"type":"CONFIRMATION","transferSummary":"Send €200 to Charlie Williams", ...}
+# → {"type":"CONFIRMATION","transferSummary":"Send $200 to Charlie Williams", ...}
 
 # 3) Confirm.
 curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
   -H "X-User-Id: 2" -H "Content-Type: application/json" \
   -d '{"answer": "yes"}'
-# → {"type":"ANSWER","reply":"Done — sent €200 to Charlie Williams.", ...}
+# → {"type":"ANSWER","reply":"Done — sent $200 to Charlie Williams.", ...}
 ```
 
 ## What's next

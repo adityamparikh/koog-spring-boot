@@ -3,12 +3,12 @@
 -- lookup for "Daniel" is ambiguous (feature.md AC-04). Names/phones live on the account.
 
 INSERT INTO account (id, first_name, last_name, phone_number, currency, balance) VALUES
-    (1, 'Demo',    'User',     '+1-202-555-0100', 'EUR', 1000.00),
-    (2, 'Alice',   'Smith',    '+1-202-555-0101', 'EUR',  500.00),
-    (3, 'Bob',     'Johnson',  '+44-20-7946-0102', 'EUR',  500.00),
-    (4, 'Charlie', 'Williams', '+61-2-5550-0103', 'EUR',  500.00),
-    (5, 'Daniel',  'Anderson', '+49-30-5550-0104', 'EUR',  500.00),
-    (6, 'Daniel',  'Craig',    '+33-1-5550-0105', 'EUR',  500.00);
+    (1, 'Demo',    'User',     '+1-202-555-0100', 'USD', 1000.00),
+    (2, 'Alice',   'Smith',    '+1-202-555-0101', 'USD',  500.00),
+    (3, 'Bob',     'Johnson',  '+44-20-7946-0102', 'USD',  500.00),
+    (4, 'Charlie', 'Williams', '+61-2-5550-0103', 'USD',  500.00),
+    (5, 'Daniel',  'Anderson', '+49-30-5550-0104', 'USD',  500.00),
+    (6, 'Daniel',  'Craig',    '+33-1-5550-0105', 'USD',  500.00);
 
 -- The demo user's address book: edges to accounts 2..6. One nickname ("Bobby") shows the
 -- nickname feature and that lookups match nicknames as well as account names.

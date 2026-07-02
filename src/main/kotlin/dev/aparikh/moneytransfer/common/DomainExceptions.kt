@@ -16,7 +16,7 @@ class NoPendingInteractionException(val conversationId: java.util.UUID) :
 
 /** Thrown when a sender cannot cover the requested transfer amount. Maps to HTTP 422. */
 class InsufficientFundsException(val accountId: Long, val requested: BigDecimal) :
-    RuntimeException("Account $accountId has insufficient funds for $requested EUR")
+    RuntimeException("Account $accountId has insufficient funds for $requested USD")
 
 /** Thrown when a transfer amount is not strictly positive. Maps to HTTP 400. */
 class InvalidAmountException(val amount: BigDecimal) :

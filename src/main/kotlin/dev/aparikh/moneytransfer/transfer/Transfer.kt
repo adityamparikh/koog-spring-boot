@@ -16,7 +16,7 @@ data class Transfer(
     val senderAccountId: Long,
     val recipientAccountId: Long,
     val amount: BigDecimal,
-    val currency: String = "EUR",
+    val currency: String = "USD",
     val purpose: String? = null,
     val status: TransferStatus = TransferStatus.COMPLETED,
     val createdAt: Instant = Instant.now(),

@@ -48,7 +48,7 @@ So overdraft protection is **UX, not safety**, which is why it's a simple app-si
 ### Step 3: Tests (AC-15, AC-16)
 - [x] `MoneyTransferToolsTest#getBalance returns the account balance` (AC-15).
 - [x] `MoneyTransferToolsTest#prepareTransfer over-balance asks the user for a smaller amount and
-      stages nothing` — requests €50 with a €30 balance, asserts nothing staged and both amounts
+      stages nothing` — requests $50 with a $30 balance, asserts nothing staged and both amounts
       named (AC-16, adapted).
 - [x] Existing `prepareTransfer` (within-balance) test stages the requested amount, with a
       `getBalance` stub.

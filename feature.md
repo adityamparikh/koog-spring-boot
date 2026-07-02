@@ -14,7 +14,7 @@ step** for review and explicit go-ahead before the next begins.
 
 ## User Stories
 - As a **bank customer**, I want to transfer money to a contact by describing it in
-  natural language ("send €50 to Alice for lunch") so that I don't have to fill in
+  natural language ("send $50 to Alice for lunch") so that I don't have to fill in
   account numbers manually.
 - As a **bank customer**, when my recipient is ambiguous (two "Daniels"), I want the
   assistant to ask me which contact I mean so that money goes to the right person.
@@ -82,14 +82,14 @@ pinned to 3.5.x. The **Java 25 toolchain is retained** (Boot 3.5.x supports Java
 #### FR-01: Domain model (persisted aggregates)
 Model, as Spring Data JDBC aggregate roots (Venmo-style — the account is the source of truth,
 a contact is a thin edge):
-- `Account` (id, `firstName`, `lastName?`, `phoneNumber?`, currency = EUR, `balance: BigDecimal`)
+- `Account` (id, `firstName`, `lastName?`, `phoneNumber?`, currency = USD, `balance: BigDecimal`)
   — a person's **profile + wallet** and the **single source of truth** for display info and
   balance; the `accountId` **is** the person's identity (there is no separate user table).
 - `Contact` (id, ownerAccountId, `contactAccountId`, `nickname?`) — a directed **edge** in an
   owner's address book referencing another account (Venmo-"friend" style). It does **not**
   duplicate the friend's name/phone; those resolve from the linked account. A unique
   `(ownerAccountId, contactAccountId)` constraint prevents duplicate edges.
-- `Transfer` (id, senderAccountId, recipientAccountId, `amount: BigDecimal`, currency EUR,
+- `Transfer` (id, senderAccountId, recipientAccountId, `amount: BigDecimal`, currency USD,
   purpose, timestamp, status) — an immutable ledger row.
 
 **Identity & terminology:** a "user"/"person" is identified by their `accountId`. Transfers
@@ -97,7 +97,7 @@ move money between accounts (`senderAccountId` → `recipientAccountId`). The ag
 in terms of a **contact id**, which is resolved to the recipient's account via
 `Contact.contactAccountId` **before** the ledger is touched. A contact's display name/phone
 are resolved from the linked account at read time (`nickname ?: account name`). Money is
-`BigDecimal` mapped to SQL `NUMERIC`; currency is EUR throughout. See `docs/data-model.md`
+`BigDecimal` mapped to SQL `NUMERIC`; currency is USD throughout. See `docs/data-model.md`
 for the ER diagram and relationships.
 
 #### FR-02: Persistence — Spring Data JDBC + Flyway
@@ -400,7 +400,7 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 ## Out of Scope
 - Authentication/authorization and multi-tenant security.
 - Real banking integrations, real payment rails, or real currency conversion.
-- Multi-currency support / FX — all balances and transfers are EUR.
+- Multi-currency support / FX — all balances and transfers are USD.
 - Transfer idempotency / duplicate-submit protection — a deliberate simplification: a
   repeated create-transfer request posts a **new** `Transfer`; there is no idempotency key.
   (Undo, by contrast, *is* idempotent — see FR-16.)

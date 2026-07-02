@@ -161,13 +161,13 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
   -H "X-User-Id: 1" -H "Content-Type: application/json" \
   -d '{"answer": "Daniel Craig"}'
 # → {"type":"CONFIRMATION","reply":"Please confirm …","conversationId":"<id>",
-#     "transferSummary":"Send €50 to Daniel Craig for \"dinner\""}
+#     "transferSummary":"Send $50 to Daniel Craig for \"dinner\""}
 
 # 3) Confirm in natural language — the transfer executes
 curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
   -H "X-User-Id: 1" -H "Content-Type: application/json" \
   -d '{"answer": "yeah go ahead"}'
-# → {"type":"ANSWER","reply":"Done — sent €50 to Daniel Craig.","conversationId":"<id>"}
+# → {"type":"ANSWER","reply":"Done — sent $50 to Daniel Craig.","conversationId":"<id>"}
 ```
 
 Reply `"no"` / `"cancel"` at step 3 instead and nothing is sent. An unrecognized reply

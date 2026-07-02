@@ -55,9 +55,9 @@ class MoneyTransferTools(
 
     /** The acting user's current available balance (FR-11). */
     @Tool
-    @LLMDescription("Get the current user's available balance, in EUR.")
+    @LLMDescription("Get the current user's available balance, in USD.")
     fun getBalance(): String =
-        "Your available balance is €${accountService.getBalance(accountId).toPlainString()}."
+        "Your available balance is $${accountService.getBalance(accountId).toPlainString()}."
 
     /**
      * Resolves a recipient by name/nickname. One match → returns it; ambiguous or unknown →
@@ -116,13 +116,13 @@ class MoneyTransferTools(
     )
     fun prepareTransfer(
         @LLMDescription("The recipient's contactId") recipientContactId: Long,
-        @LLMDescription("The amount to send in EUR, e.g. 50 or 50.00") amount: String,
+        @LLMDescription("The amount to send in USD, e.g. 50 or 50.00") amount: String,
         @LLMDescription("Optional note describing the transfer's purpose") purpose: String? = null,
     ): String {
         val requested = try {
             BigDecimal(amount.trim())
         } catch (_: NumberFormatException) {
-            return "\"$amount\" is not a valid amount. Ask the user for a numeric EUR amount."
+            return "\"$amount\" is not a valid amount. Ask the user for a numeric USD amount."
         }
         if (requested.signum() <= 0) return "The amount must be greater than zero."
 
@@ -133,11 +133,11 @@ class MoneyTransferTools(
         // amount (up to their balance) on the next turn — we don't assume they want it all.
         if (requested > available) {
             return if (available.signum() <= 0) {
-                "The user has no available balance (€${available.toPlainString()}), so nothing can be sent right now."
+                "The user has no available balance ($${available.toPlainString()}), so nothing can be sent right now."
             } else {
-                "The user asked to send €${requested.toPlainString()} but only has €${available.toPlainString()} " +
+                "The user asked to send $${requested.toPlainString()} but only has $${available.toPlainString()} " +
                     "available. Do NOT stage a transfer — ask the user how much they would like to send, up to " +
-                    "€${available.toPlainString()}, then call prepareTransfer again with that amount."
+                    "$${available.toPlainString()}, then call prepareTransfer again with that amount."
             }
         }
 
