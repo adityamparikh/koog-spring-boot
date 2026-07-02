@@ -90,24 +90,29 @@ class AgentServiceTest {
     }
 
     @Test
-    fun `renderInput returns the bare message for a new conversation`() {
+    fun `buildPrompt puts the new message last for a fresh conversation`() {
         val service = AgentService(getMockExecutor { mockLLMAnswer("x").asDefaultResponse }, conversations, properties)
 
-        assertEquals("Send 50 to Alice", service.renderInput(1, emptyList(), "Send 50 to Alice"))
+        val prompt = service.buildPrompt(1, emptyList(), "Send 50 to Alice")
+
+        // system message + the new user message, in order.
+        assertEquals("Send 50 to Alice", prompt.messages.last().textContent())
+        assertEquals(2, prompt.messages.size)
     }
 
     @Test
-    fun `renderInput replays prior turns as context`() {
+    fun `buildPrompt replays prior turns as messages`() {
         val service = AgentService(getMockExecutor { mockLLMAnswer("x").asDefaultResponse }, conversations, properties)
         val history = listOf(
             Turn(Role.USER, "Who are my contacts?"),
             Turn(Role.ASSISTANT, "Alice, Bob, and two Daniels."),
         )
 
-        val input = service.renderInput(1, history, "Send 50 to Alice")
+        val prompt = service.buildPrompt(1, history, "Send 50 to Alice")
+        val texts = prompt.messages.map { it.textContent() }
 
-        assertTrue(input.contains("Who are my contacts?"))
-        assertTrue(input.contains("Alice, Bob, and two Daniels."))
-        assertTrue(input.trimEnd().endsWith("Send 50 to Alice"))
+        assertTrue(texts.any { it.contains("Who are my contacts?") })
+        assertTrue(texts.any { it.contains("Alice, Bob, and two Daniels.") })
+        assertEquals("Send 50 to Alice", prompt.messages.last().textContent())
     }
 }

@@ -139,11 +139,17 @@ export OPENAI_API_KEY=sk-...
 **Multi-provider fault tolerance.** Two layers, by design:
 - *Same-provider retry* — each executor already wraps its client in Koog's `RetryingLLMClient`,
   which retries transient `429`/`5xx`/timeout errors on the same provider (backoff + jitter).
-- *Cross-provider failover* — Koog's `MultiLLMPromptExecutor.fallback` only routes when a
-  provider's client is **missing**, not when a present client errors. So the "Anthropic errors
-  → retry on OpenAI `gpt-5.4`" behavior is hand-rolled in `AgentService`: try Anthropic, and on
-  any error re-run the same prompt on OpenAI. If every configured provider fails, the API
-  returns `503` `ProblemDetail`.
+- *Cross-provider failover* — following Koog's documented
+  [`RobustAIService.generateWithFallback`](https://docs.koog.ai/spring-boot/#llm-provider-fallback)
+  pattern, `AgentService` injects the aggregate `multiLLMPromptExecutor` and iterates a model
+  fallback chain (`[claude-sonnet-4-6, gpt-5.4]`), calling `execute(prompt, model)` on each in a
+  try/catch — the executor routes by `model.provider`, so a failed Anthropic call falls through
+  to OpenAI. This is *not* `MultiLLMPromptExecutor.fallback` (`FallbackPromptExecutorSettings`),
+  which only routes when a provider's client is **missing**, never on a runtime error. If every
+  provider fails, the API returns `503` `ProblemDetail`.
+
+> Implementation notes on the coroutine style of these tests (`runBlocking` vs `runTest`, and
+> why `chat` is `suspend`) live in [docs/notes/coroutine-testing.md](docs/notes/coroutine-testing.md).
 
 **8. Chat with the assistant**
 ```bash
