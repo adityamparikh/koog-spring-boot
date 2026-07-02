@@ -32,36 +32,41 @@ are used from step 7 / undo).
 
 ```mermaid
 erDiagram
-    ACCOUNT ||--o{ CONTACT  : "owns (owner_account_id)"
-    ACCOUNT ||--o{ CONTACT  : "is target of (contact_account_id)"
-    ACCOUNT ||--o{ TRANSFER : "sends (sender_account_id)"
-    ACCOUNT ||--o{ TRANSFER : "receives (recipient_account_id)"
+    ACCOUNT ||--o{ CONTACT : owns
+    ACCOUNT ||--o{ CONTACT : "target of"
+    ACCOUNT ||--o{ TRANSFER : sends
+    ACCOUNT ||--o{ TRANSFER : receives
 
     ACCOUNT {
-        bigint        id PK
-        text          first_name
-        text          last_name    "nullable"
-        text          phone_number "nullable"
-        text          currency     "default EUR"
-        numeric_19_2  balance      "CHECK >= 0"
+        bigint id PK
+        text first_name
+        text last_name
+        text phone_number
+        text currency
+        numeric balance
     }
     CONTACT {
-        bigint  id PK
-        bigint  owner_account_id   FK
-        bigint  contact_account_id FK
-        text    nickname "nullable"
+        bigint id PK
+        bigint owner_account_id FK
+        bigint contact_account_id FK
+        text nickname
     }
     TRANSFER {
-        bigint        id PK
-        bigint        sender_account_id    FK
-        bigint        recipient_account_id FK
-        numeric_19_2  amount   "CHECK > 0"
-        text          currency "default EUR"
-        text          purpose  "nullable"
-        text          status
-        timestamptz   created_at
+        bigint id PK
+        bigint sender_account_id FK
+        bigint recipient_account_id FK
+        numeric amount
+        text currency
+        text purpose
+        text status
+        timestamptz created_at
     }
 ```
+
+Column nullability & constraints (from `V1__init.sql`, kept out of the diagram for
+compatibility): `account.balance` `CHECK (balance >= 0)`; `transfer.amount` `CHECK (amount > 0)`;
+`last_name`, `phone_number`, `nickname`, `purpose` are nullable; `currency` defaults to `EUR`;
+`contact` has `UNIQUE (owner_account_id, contact_account_id)`.
 
 ## Aggregate ↔ table mapping
 
