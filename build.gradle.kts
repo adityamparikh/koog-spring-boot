@@ -1,8 +1,8 @@
 plugins {
-    kotlin("jvm") version "2.3.21"
-    kotlin("plugin.spring") version "2.3.21"
-    id("org.springframework.boot") version "4.1.0"
-    id("io.spring.dependency-management") version "1.1.7"
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.spring)
+    alias(libs.plugins.spring.boot)
+    alias(libs.plugins.spring.dependency.management)
 }
 
 group = "dev.aparikh"
@@ -19,25 +19,35 @@ repositories {
     mavenCentral()
 }
 
-val koogVersion by extra { "1.0.0-beta" }
-
 dependencies {
-    implementation(libs.koog.agents)
-    implementation(libs.koog.tools)
-    implementation(libs.koog.executor.openai.client)
-    implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("org.springframework.boot:spring-boot-starter-webmvc")
-    implementation("org.jetbrains.kotlin:kotlin-reflect")
-    implementation("tools.jackson.module:jackson-module-kotlin")
-    testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Web + persistence (Spring Data JDBC) + actuator.
+    implementation(libs.spring.boot.starter.web)
+    implementation(libs.spring.boot.starter.data.jdbc)
+    implementation(libs.spring.boot.starter.actuator)
+    implementation(libs.jackson.module.kotlin)
+    implementation(kotlin("reflect"))
+    implementation(libs.springdoc.openapi.starter.webmvc.ui)
+
+    // Database driver + Flyway migrations.
+    runtimeOnly(libs.postgresql)
+    implementation(libs.flyway.core)
+    runtimeOnly(libs.flyway.database.postgresql)
+
+    // Local Postgres via Spring Boot Docker Compose support (dev/run only).
+    developmentOnly(libs.spring.boot.docker.compose)
+
+    // Testing: unit (MockK) + integration (Testcontainers Postgres).
+    testImplementation(libs.spring.boot.starter.test)
+    testImplementation(libs.spring.boot.testcontainers)
+    testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.testcontainers.junit.jupiter)
+    testImplementation(libs.mockk)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 kotlin {
     compilerOptions {
-        freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+        freeCompilerArgs.addAll("-Xjsr305=strict")
     }
 }
 

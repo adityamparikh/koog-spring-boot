@@ -1,11 +1,48 @@
+# Version catalog — the single source of truth for all versions and dependency coordinates.
+# (feature.md OQ-2). No inline version strings in build.gradle.kts.
 [versions]
 kotlin = "2.3.21"
+springBoot = "3.5.16"
+springDependencyManagement = "1.1.7"
+springdoc = "2.8.17"
+mockk = "1.14.11"
+# Koog — retained for later steps (step 2 onward); unused in step 1.
 koog = "1.0.0"
 
 [libraries]
+# Spring Boot starters (versions managed by the Spring Boot BOM / plugin).
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web" }
+spring-boot-starter-data-jdbc = { module = "org.springframework.boot:spring-boot-starter-data-jdbc" }
+spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
+spring-boot-docker-compose = { module = "org.springframework.boot:spring-boot-docker-compose" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-boot-testcontainers = { module = "org.springframework.boot:spring-boot-testcontainers" }
+
+# Persistence & migrations (versions managed by the Spring Boot BOM).
+flyway-core = { module = "org.flywaydb:flyway-core" }
+flyway-database-postgresql = { module = "org.flywaydb:flyway-database-postgresql" }
+postgresql = { module = "org.postgresql:postgresql" }
+
+# JSON (Jackson 2 — matches Boot 3.5.x).
+jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin" }
+
+# API docs.
+springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
+
+# Testing.
+testcontainers-postgresql = { module = "org.testcontainers:postgresql" }
+testcontainers-junit-jupiter = { module = "org.testcontainers:junit-jupiter" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+# Koog (retained for later steps; NOT referenced by step 1's build).
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
 koog-tools = { module = "ai.koog:agents-tools", version.ref = "koog" }
 koog-executor-openai-client = { module = "ai.koog:prompt-executor-openai-client", version.ref = "koog" }
 
 [plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
