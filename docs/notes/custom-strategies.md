@@ -40,7 +40,7 @@ case onto the table:
   banking example's actual reason for a graph, and would be its own step.)
 - **Verify/revise loop?** *Shape-wise, yes* — validate the amount, revise if over balance,
   re-validate. But the graph-hostable version of that loop is **autonomous** (the agent verifies
-  `€50 > €30` and auto-corrects to `€30` itself, within one run, no human). That is exactly the
+  `$50 > $30` and auto-corrects to `$30` itself, within one run, no human). That is exactly the
   silent auto-cap we **rejected** — we want the **user** to choose the amount. A user-driven
   revision is inherently **between turns** (the user supplies the new amount on the next message),
   and Koog has **no mid-run "ask the user" primitive**, so it can't live in a graph. It's a

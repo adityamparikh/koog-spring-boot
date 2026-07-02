@@ -133,7 +133,7 @@ class AgentService(
                 pending.clear(conversationId)
                 val reply = try {
                     transferService.transfer(staged.senderAccountId, staged.recipientAccountId, staged.amount, staged.purpose)
-                    "Done — sent €${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
+                    "Done — sent $${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
                 } catch (e: InsufficientFundsException) {
                     // Step 3 fails honestly here; step 4 adds the "offer up to your balance" flow.
                     "That transfer would exceed your balance, so nothing was sent."

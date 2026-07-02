@@ -1,7 +1,7 @@
 # Data Model (step 1)
 
 The step-1 domain has three persisted aggregates on PostgreSQL, mapped with **Spring Data
-JDBC**. Money is `BigDecimal` / `NUMERIC(19,2)`; currency is EUR throughout.
+JDBC**. Money is `BigDecimal` / `NUMERIC(19,2)`; currency is USD throughout.
 
 ## Aggregates
 
@@ -65,7 +65,7 @@ erDiagram
 
 Column nullability & constraints (from `V1__init.sql`, kept out of the diagram for
 compatibility): `account.balance` `CHECK (balance >= 0)`; `transfer.amount` `CHECK (amount > 0)`;
-`last_name`, `phone_number`, `nickname`, `purpose` are nullable; `currency` defaults to `EUR`;
+`last_name`, `phone_number`, `nickname`, `purpose` are nullable; `currency` defaults to `USD`;
 `contact` has `UNIQUE (owner_account_id, contact_account_id)`.
 
 ## Aggregate ↔ table mapping

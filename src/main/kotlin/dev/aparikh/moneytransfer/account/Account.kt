@@ -8,7 +8,7 @@ import java.math.BigDecimal
  * A person's profile and wallet. The [id] is the person's identity in this application
  * (there is no separate user table). This account is the single source of truth for display
  * information ([firstName], [lastName], [phoneNumber]) — contacts reference an account rather
- * than duplicating it. Currency is EUR; [balance] is never negative.
+ * than duplicating it. Currency is USD; [balance] is never negative.
  */
 @Table("account")
 data class Account(
@@ -17,6 +17,6 @@ data class Account(
     val firstName: String,
     val lastName: String? = null,
     val phoneNumber: String? = null,
-    val currency: String = "EUR",
+    val currency: String = "USD",
     val balance: BigDecimal,
 )

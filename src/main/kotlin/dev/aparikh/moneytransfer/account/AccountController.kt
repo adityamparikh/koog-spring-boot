@@ -44,5 +44,5 @@ class AccountController(private val accountService: AccountService) {
     /** Returns the account's current balance. */
     @GetMapping("/{id}/balance")
     fun balance(@PathVariable id: Long): BalanceResponse =
-        BalanceResponse(id, accountService.getBalance(id), "EUR")
+        BalanceResponse(id, accountService.getBalance(id), "USD")
 }

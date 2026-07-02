@@ -76,7 +76,7 @@ class AgentControllerTest {
             reply = "Please confirm.",
             conversationId = conversationId,
             type = InteractionType.CONFIRMATION,
-            transferSummary = "Send €50 to Daniel Craig",
+            transferSummary = "Send $50 to Daniel Craig",
         )
 
         val async = mockMvc.perform(
@@ -89,7 +89,7 @@ class AgentControllerTest {
         mockMvc.perform(asyncDispatch(async))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.type").value("CONFIRMATION"))
-            .andExpect(jsonPath("$.transferSummary").value("Send €50 to Daniel Craig"))
+            .andExpect(jsonPath("$.transferSummary").value("Send $50 to Daniel Craig"))
     }
 
     @Test
