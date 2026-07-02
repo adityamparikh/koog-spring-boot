@@ -18,20 +18,19 @@ Persisted money-transfer domain, no AI. Realigned Spring Boot 4 skeleton to **3.
 - `src/main/resources/application.properties` — virtual threads, Flyway, springdoc, docker-compose datasource.
 - Removed the default `KoogSpringBootApplicationTests.kt` (folded context-load into the Testcontainers IT).
 
-### Acceptance Criteria
-- [x] AC-01: Passed — `./gradlew build` green (compiles + tests).
-- [~] AC-02: Covered by `MoneyTransferIntegrationTest#happy path transfer persists updated balances` — **skipped here (no Docker)**; runs where Docker is available. (Durability is via Postgres; the test reads persisted balances back, per-test tx rolls back for isolation.)
-- [x] AC-03: Passed (logic) — `TransferServiceTest#transfer with insufficient funds does not credit or record`; also `MoneyTransferIntegrationTest#...returns 422...` (skipped w/o Docker).
-- [~] AC-04: Covered by `MoneyTransferIntegrationTest#...two Daniels` — skipped w/o Docker.
-- [~] AC-05: Covered by `MoneyTransferIntegrationTest#openapi docs...` + `...422 problem detail` — skipped w/o Docker.
-- [~] AC-06: Covered — every Testcontainers IT boots Flyway on a clean DB; skipped w/o Docker.
-- [~] AC-07: Covered by `TransferConcurrencyIT#concurrent transfers never overdraw and never lose updates` — skipped w/o Docker.
-- [x] AC-08: Unit tests pass (5/5); integration/concurrency tests written & compile, skipped w/o Docker.
-
-Legend: `[x]` executed & passing here · `[~]` implemented and compiling, but skipped in this environment because Docker is unavailable (runs on any machine/CI with Docker).
+### Acceptance Criteria (all executed against real PostgreSQL via Testcontainers)
+- [x] AC-01: Passed — `./gradlew build` green (compiles + all 12 tests).
+- [x] AC-02: Passed — `MoneyTransferIntegrationTest#happy path transfer persists updated balances` (reads balances back from Postgres).
+- [x] AC-03: Passed — `TransferServiceTest#...insufficient funds...` + `MoneyTransferIntegrationTest#...returns 422...`.
+- [x] AC-04: Passed — `MoneyTransferIntegrationTest#...two Daniels` (ambiguous lookup via join to `account`).
+- [x] AC-05: Passed — `MoneyTransferIntegrationTest#openapi docs...` + `...422 problem detail`.
+- [x] AC-06: Passed — every IT boots Flyway on a clean containerized DB.
+- [x] AC-07: Passed — `TransferConcurrencyIT#concurrent transfers never overdraw and never lose updates`.
+- [x] AC-08: Passed — 5 unit + 7 integration/concurrency tests, 12/12 green.
 
 ### Notes
-- **Docker unavailable in this environment**, so Testcontainers integration/concurrency tests were skipped (not failed) via `@Testcontainers(disabledWithoutDocker = true)`. Run `./gradlew build` on a machine with Docker to execute AC-02/04/05/06/07 end-to-end.
+- **Full suite ran against Docker/Testcontainers** — 12/12 tests pass (unit + integration + concurrency). The `@Testcontainers(disabledWithoutDocker = true)` guard means the build also stays green on machines without Docker (IT skipped).
+- **Venmo-style domain model:** `Account` is the profile + wallet (single source of truth for `firstName`/`lastName`/`phoneNumber`); `Contact` is a thin edge `(ownerAccountId, contactAccountId, nickname?)` — no duplicated name/phone (`linkedAccountId` → `contactAccountId`). Contact display is resolved from the linked account; name search joins to it. See `docs/data-model.md` for the ER diagram.
 - **Gradle stays on 9.5.1** (the plan floated a downgrade to 8.x): JDK 25 requires Gradle 9, and Boot 3.5.16's plugin applies cleanly on 9.5.1 — so no wrapper change.
 - Concurrency safety uses the **atomic conditional UPDATE** (no `@Version`). Existence is checked before the debit so a `0` row-count unambiguously means insufficient funds.
-- `plan.md`/`feature.md` live in a separate docs PR; on this branch they are git-excluded reference copies, so their checkboxes were not propagated here.
+- `plan.md`/`feature.md` live in a separate docs PR; on this branch they are git-excluded reference copies.

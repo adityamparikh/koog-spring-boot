@@ -6,21 +6,21 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
-/** A contact as returned by the API. */
+/** A contact as returned by the API; display name/phone come from the linked account. */
 data class ContactResponse(
-    val id: Long,
-    val name: String,
-    val lastName: String?,
+    val contactId: Long,
+    val contactAccountId: Long,
+    val displayName: String,
+    val nickname: String?,
     val phoneNumber: String?,
-    val linkedAccountId: Long,
 )
 
-private fun Contact.toResponse() = ContactResponse(
-    id = requireNotNull(id),
-    name = name,
-    lastName = lastName,
+private fun ResolvedContact.toResponse() = ContactResponse(
+    contactId = contactId,
+    contactAccountId = contactAccountId,
+    displayName = displayName,
+    nickname = nickname,
     phoneNumber = phoneNumber,
-    linkedAccountId = linkedAccountId,
 )
 
 /** REST endpoints for listing and searching the acting user's contacts. */
@@ -30,7 +30,7 @@ class ContactController(private val contactService: ContactService) {
 
     /**
      * Lists the acting user's (`X-User-Id`) contacts, or — when [name] is provided — the
-     * contacts whose first name matches (which may be empty or ambiguous).
+     * contacts whose linked-account name or nickname matches (which may be empty or ambiguous).
      */
     @GetMapping
     fun list(

@@ -9,7 +9,9 @@ import java.math.BigDecimal
 /** An account as returned by the API. */
 data class AccountResponse(
     val id: Long,
-    val ownerName: String,
+    val firstName: String,
+    val lastName: String?,
+    val phoneNumber: String?,
     val currency: String,
     val balance: BigDecimal,
 )
@@ -23,7 +25,9 @@ data class BalanceResponse(
 
 private fun Account.toResponse() = AccountResponse(
     id = requireNotNull(id),
-    ownerName = ownerName,
+    firstName = firstName,
+    lastName = lastName,
+    phoneNumber = phoneNumber,
     currency = currency,
     balance = balance,
 )
