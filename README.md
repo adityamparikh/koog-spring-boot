@@ -1,17 +1,23 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step1-money-transfer`)
-is step 1: the persisted money-transfer domain, with no AI yet.**
+branch that adds one capability (see `feature.md`). **This branch (`step2-koog-spring-boot`)
+is step 2: the Koog Spring Boot starter integration — a conversational `/agent/chat` endpoint
+over a multi-provider LLM setup, on top of step 1's persisted domain.**
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
-> completion (after step 10). This README covers how to run and exercise **step 1**.
+> completion (after step 10). This README grows one usage section per step; it currently
+> covers **step 1** (money-transfer REST) and **step 2** (AI agent chat).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
 - **Docker** — used two ways:
   - at runtime, Spring Boot Docker Compose support auto-starts PostgreSQL from `compose.yaml`;
   - in tests, Testcontainers starts a throwaway PostgreSQL.
+- **LLM API keys (step 2+)** — for the `/agent/chat` endpoint, set `ANTHROPIC_API_KEY` and
+  `OPENAI_API_KEY` in your environment (never committed). The app still boots without them;
+  a chat request just returns `503` until at least one provider is configured. Tests never
+  call a real LLM — they use Koog's `agents-test` mock executor.
 
 ## Run
 ```bash
@@ -109,8 +115,60 @@ curl -s -X POST http://localhost:8080/api/v1/transfers \
 curl -s http://localhost:8080/api/v1/transfers -H "X-User-Id: 1"
 ```
 
+## Step 2 — AI agent chat (Koog Spring Boot starter)
+Step 2 adds a conversational endpoint backed by the [Koog](https://docs.koog.ai) agent
+framework. There are **no tools yet** (those arrive in step 3) — it's a single message in, a
+text reply out, keyed by a `conversationId` so follow-up turns keep context.
+
+**Setup:** export your keys before `./gradlew bootRun`:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+```
+
+**LLM configuration.** The Koog starter auto-configures a client + executor per provider whose
+`api-key` is non-blank, plus an aggregate `multiLLMPromptExecutor`. Models are selected in
+`application.properties` by Koog model id:
+
+| Property | Default | Role |
+|----------|---------|------|
+| `app.agent.anthropic-model` | `claude-sonnet-4-6` | everyday model (feature.md's "Sonnet 5") |
+| `app.agent.anthropic-complex-model` | `claude-opus-4-7` | complex turns (feature.md's "Opus 4.8"); first used in step 4 |
+| `app.agent.openai-fallback-model` | `gpt-5.4` | cross-provider error-fallback |
+
+**Multi-provider fault tolerance.** Two layers, by design:
+- *Same-provider retry* — each executor already wraps its client in Koog's `RetryingLLMClient`,
+  which retries transient `429`/`5xx`/timeout errors on the same provider (backoff + jitter).
+- *Cross-provider failover* — following Koog's documented
+  [`RobustAIService.generateWithFallback`](https://docs.koog.ai/spring-boot/#llm-provider-fallback)
+  pattern, `AgentService` injects the aggregate `multiLLMPromptExecutor` and iterates a model
+  fallback chain (`[claude-sonnet-4-6, gpt-5.4]`), calling `execute(prompt, model)` on each in a
+  try/catch — the executor routes by `model.provider`, so a failed Anthropic call falls through
+  to OpenAI. This is *not* `MultiLLMPromptExecutor.fallback` (`FallbackPromptExecutorSettings`),
+  which only routes when a provider's client is **missing**, never on a runtime error. If every
+  provider fails, the API returns `503` `ProblemDetail`.
+
+> Implementation notes on the coroutine style of these tests (`runBlocking` vs `runTest`, and
+> why `chat` is `suspend`) live in [docs/notes/coroutine-testing.md](docs/notes/coroutine-testing.md).
+
+**8. Chat with the assistant**
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "Hi! What can you help me with?"}'
+# → 200 {"reply": "...", "conversationId": "b1f0c9e2-..."}
+```
+
+**9. Continue the conversation** (pass the returned `conversationId`)
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "And remind me what I just asked?", "conversationId": "b1f0c9e2-..."}'
+# → the reply reflects the earlier turn (context is replayed per conversationId)
+```
+
 ## What's next
-Later branches add: Koog framework integration (step 2), agent tools (step 3), a custom
-balance-cap strategy (step 4), Postgres checkpointing (step 5), OpenTelemetry (step 6),
-transfer rollback (step 7), history compression (step 8), fuller tests (step 9), and a Spring
-AI refactor (step 10). See `feature.md` for the full roadmap.
+Later branches add: agent tools + human-in-the-loop (step 3), a custom balance-cap strategy
+(step 4), Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback (step 7),
+history compression (step 8), fuller tests (step 9), and a Spring AI refactor (step 10). See
+`feature.md` for the full roadmap.

@@ -26,4 +26,9 @@ class GlobalExceptionHandler {
     fun handleInvalidAmount(ex: InvalidAmountException): ProblemDetail =
         ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.message ?: "Invalid amount")
             .apply { title = "Invalid amount" }
+
+    @ExceptionHandler(AgentUnavailableException::class)
+    fun handleAgentUnavailable(ex: AgentUnavailableException): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.message ?: "Assistant unavailable")
+            .apply { title = "Assistant unavailable" }
 }

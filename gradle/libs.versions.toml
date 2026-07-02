@@ -6,8 +6,10 @@ springBoot = "3.5.16"
 springDependencyManagement = "1.1.7"
 springdoc = "2.8.17"
 mockk = "1.14.11"
-# Koog — retained for later steps (step 2 onward); unused in step 1.
+# Koog — core agent/prompt libraries (stable 1.0.0). The Spring Boot starter module is
+# versioned independently and is still -beta even though core Koog is GA.
 koog = "1.0.0"
+koogSpringBootStarter = "1.0.0-beta"
 
 [libraries]
 # Spring Boot starters (versions managed by the Spring Boot BOM / plugin).
@@ -35,10 +37,15 @@ testcontainers-junit-jupiter = { module = "org.testcontainers:junit-jupiter" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 
-# Koog (retained for later steps; NOT referenced by step 1's build).
-koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
-koog-tools = { module = "ai.koog:agents-tools", version.ref = "koog" }
-koog-executor-openai-client = { module = "ai.koog:prompt-executor-openai-client", version.ref = "koog" }
+# Koog Spring Boot starter — auto-configures the Anthropic/OpenAI clients, the
+# per-provider executors, and the aggregate multiLLMPromptExecutor bean. It re-exports
+# `koog-agents` via `api`, so AIAgent / PromptExecutor / AnthropicModels / OpenAIModels are
+# all transitively on the compile classpath — no separate koog-agents dependency needed.
+# https://docs.koog.ai/spring-boot/
+koog-spring-boot-starter = { module = "ai.koog:koog-spring-boot-starter", version.ref = "koogSpringBootStarter" }
+# Koog's deterministic agent-testing module: getMockExecutor / mockLLMAnswer, so agent tests
+# never hit a real LLM API. https://docs.koog.ai/testing/
+koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

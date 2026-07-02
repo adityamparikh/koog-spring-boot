@@ -1,173 +1,231 @@
-# Implementation Plan: Money-Transfer Domain (Step 1 — `step1-money-transfer`)
+# Implementation Plan: Koog Spring Boot Starter Integration (Step 2 — `step2-koog-spring-boot`)
 
-> **Status: implemented in PR #2.** All 8 acceptance criteria pass (5 unit + 7 Testcontainers
-> integration/concurrency tests, 12/12 green). The domain was refined to a **Venmo-style model**
-> (Account = profile+wallet source of truth; Contact = thin edge with `contactAccountId` +
-> `nickname`, no duplicated name/phone). See `docs/data-model.md` for the ER diagram.
+> Scope: **Step 2 only** of `feature.md` — wire the Koog Spring Boot starter into the
+> already-merged step-1 domain, add a single-turn `/api/v1/agent/chat` endpoint with a
+> hand-rolled Anthropic→OpenAI fallback, and set up the `ai.koog:agents-test` mock-executor
+> pattern so **no test hits a real LLM API**. No tools, no HITL, no checkpointing yet
+> (those arrive at steps 3/5). Branch `step2-koog-spring-boot` cut from `main`
+> (step 1 merged via PR #2).
 >
-> Scope: **Step 1 only** of `feature.md` — the persisted money-transfer application with
-> **no AI**. Covers FR-01…FR-05 and AC-01…AC-08. Koog is intentionally **not** added here
-> (it arrives at step 2). Work happens on branch `step1-money-transfer` cut from `master`.
->
-> Testing note: this step uses only JUnit 5 + MockK + Testcontainers. Koog's agent testing
-> framework (`ai.koog:agents-test` — `getMockExecutor`, `mockTool`, `withTesting()` graph
-> assertions) is **deferred to the step 2/3 plans**, where the first agent/tools appear.
+> Covers FR-06, FR-07 and AC-09, AC-10, AC-28 (partially — full fallback proof), plus the
+> cross-cutting AC-25 (catalog versions), AC-26 (Koog teaching comments, starting now),
+> AC-27/AC-29 (incremental README section).
 
-## Overview
-Realign the Boot-4 skeleton to **Spring Boot 3.5.x**, then build a small, well-tested
-money-transfer service: three persisted aggregates (`Account`, `Contact`, `Transfer`) on
-**PostgreSQL** via **Spring Data JDBC + Flyway**, a `TransferService` that moves money with
-an **atomic conditional UPDATE** (no read-modify-write), and a REST API under `/api/v1`
-documented by **springdoc/Swagger UI**. Postgres runs locally through **Spring Boot Docker
-Compose support**; integration tests use **Testcontainers**.
+## Pre-implementation research (already done)
+Verified directly against the JetBrains `koog` repo source at tag `1.0.0` / Maven Central
+(not just prose docs), since `feature.md`'s model names ("Sonnet 5", "Opus 4.8") don't
+exist verbatim as Koog enum entries:
+- `ai.koog:koog-spring-boot-starter:1.0.0-beta` — the Spring starter module is still
+  `-beta` even though core Koog is `1.0.0`.
+- `ai.koog:agents-test:1.0.0` — stable, not beta.
+- Auto-configured beans (confirmed from `@AutoConfiguration` source): `anthropicLLMClient`,
+  `anthropicExecutor: PromptExecutor`, `openAILLMClient`, `openAIExecutor: PromptExecutor`,
+  and `multiLLMPromptExecutor: MultiLLMPromptExecutor` (aggregates every enabled provider's
+  client). Gated on `ai.koog.<provider>.enabled` (defaults `true`) + non-blank
+  `ai.koog.<provider>.api-key` (defaults to `${ANTHROPIC_API_KEY:}` / `${OPENAI_API_KEY:}`).
+- `AnthropicModels` enum entries that actually exist: `Haiku_4_5`, `Sonnet_4`, `Sonnet_4_5`,
+  `Sonnet_4_6`, `Opus_4`, `Opus_4_1`, `Opus_4_5`, `Opus_4_6`, `Opus_4_7`. There is no
+  `Sonnet_5`/`Opus_4_8`. Closest/newest: `Sonnet_4_6`, `Opus_4_7`.
+- `OpenAIModels.Chat` **does** have an exact match for the spec's fallback model:
+  `GPT5_4`.
+- **Koog's resilience is per-provider, not cross-provider.** Each auto-configured executor
+  already wraps its raw client in `RetryingLLMClient` (`AnthropicLLMAutoConfiguration`:
+  `MultiLLMPromptExecutor(LLMProvider.Anthropic to client.toRetryingClient(properties.retry))`),
+  which retries the **same** provider on transient faults (HTTP `429/500/502/503/504/529`,
+  keywords like `rate limit`/`overloaded`/`timeout`; default 3 attempts, exponential backoff
+  1s→30s + jitter, configurable via `ai.koog.anthropic.retry.*`/`ai.koog.openai.retry.*`).
+  Separately, **`MultiLLMPromptExecutor`'s `fallback` only fires when no client is registered
+  for a provider at all** (`FallbackPromptExecutorSettings`) — confirmed from
+  `MultiLLMPromptExecutor.execute()`'s `when` branching purely on `provider in llmClients`,
+  with no try/catch around the client call. So once `RetryingLLMClient` exhausts its retries
+  on a *sustained* Anthropic failure, the exception propagates uncaught — Koog itself never
+  tries OpenAI. The "Anthropic errors → retry on OpenAI" behavior in FR-07/AC-28 is therefore
+  a real gap in the framework, not a misunderstanding of it, and must be **hand-rolled** in
+  `AgentService`.
+- Koog's own documented Spring pattern (`docs.koog.ai/spring-boot`) injects `anthropicExecutor`
+  directly and calls `executor.execute(prompt, model)` from a `suspend fun` controller method
+  — there is no officially documented "AIAgent wired into a Spring controller" sample. Since
+  this project is explicitly a Koog-concepts teaching build (AC-26), we still construct a real
+  `AIAgent(promptExecutor, llmModel)` per FR-07's wording, but conversation continuity across
+  HTTP calls (no checkpointing until step 5) is **our own design**, documented below.
 
 ## Architecture Decisions
-- **Modular-by-feature packages** under `dev.aparikh.moneytransfer`: `account`, `contact`,
-  `transfer`, plus `common` (error handling, OpenAPI config). Each feature owns its
-  aggregate, repository, service, controller, and DTOs.
-- **Spring Data JDBC (not JPA):** aggregates are plain Kotlin `data class`es with `@Id`;
-  repositories are `CrudRepository` interfaces. No lazy loading, no persistence context.
-- **Concurrency safety = atomic conditional UPDATE:** the debit is a `@Modifying @Query`
-  (`UPDATE account SET balance = balance - :amount WHERE id = :id AND balance >= :amount`);
-  rows-affected `0` ⇒ insufficient funds. A DB-level `CHECK (balance >= 0)` is a second line
-  of defense. No `@Version`, no application retry.
-- **Identity model (per feature.md OQ-8/OQ-9):** a person = their `accountId`. `Contact` has
-  `ownerAccountId` + `linkedAccountId`. The acting user is passed explicitly via an
-  **`X-User-Id`** header (no auth). Surrogate `BIGINT` keys; seed rows use explicit ids so
-  contacts can link to accounts.
-- **Money = `BigDecimal`** mapped to `NUMERIC(19,2)`; currency EUR throughout.
-- **Errors:** domain exceptions → a central `@RestControllerAdvice` returning RFC 7807
-  `ProblemDetail`.
-- **Immutable ledger:** `Transfer` rows are append-only; `status` starts `COMPLETED`
-  (the `REVERSED`/reversal states are defined now but only used at step 7).
+- **Model mapping (documented substitution):** `app.agent.anthropic-model` defaults to
+  `Sonnet_4_6` (stands in for spec's "Sonnet 5" — nearest available Koog enum) and
+  `app.agent.anthropic-complex-model` defaults to `Opus_4_7` (stands in for "Opus 4.8").
+  `app.agent.openai-fallback-model` defaults to `GPT5_4` — an **exact** match, no
+  substitution needed. All three are `@ConfigurationProperties("app.agent")`-bound strings
+  resolved to the enum via `valueOf`, so a future Koog bump that adds true `Sonnet_5`/
+  `Opus_4_8` entries is a one-line properties change, not a code change.
+- **"Complex turn" model selection deferred:** step 2 has no tool/strategy graph, so there is
+  no signal yet for what counts as a "complex" turn. `anthropic-complex-model` is wired
+  through `AgentModelProperties` but unused by `AgentService.chat` until step 4's custom
+  strategy (FR-11/12) gives it a real trigger. Noted as a risk below so it isn't lost.
+- **Hand-rolled fallback, not `MultiLLMPromptExecutor.fallback`:** `AgentService.chat` tries
+  `AIAgent(anthropicExecutor, anthropicModel).run(...)`; any exception falls back to
+  `AIAgent(openAIExecutor, openAiFallbackModel).run(...)` with the same input. This is the
+  behavior AC-28 requires and is exercised with an `agents-test` mock that fails the
+  Anthropic client.
+- **Conversation continuity without checkpointing:** each `/agent/chat` call constructs a
+  fresh `AIAgent` (Koog's basic constructor is a single-shot `run(input: String)`, confirmed
+  from the JetBrains source; there's no documented cross-request session API at this version).
+  A small in-memory `ConversationStore` (`ConcurrentHashMap<UUID, List<Turn>>`) keeps prior
+  turns per `conversationId`; each call renders the stored transcript plus the new message
+  into one input string passed to `agent.run(...)`. This satisfies FR-07's "conversationId for
+  follow-up turns" now, and is the seam step 3 replaces with real Koog checkpoint/pause-resume
+  and step 5 moves to Postgres — **the `ConversationStore` interface, not its callers, changes**.
+- **New `agent` package** under `dev.aparikh.moneytransfer.agent`, matching the existing
+  feature-first module layout (`account`, `contact`, `transfer`, `common`).
+- **Koog teaching-comment convention starts now (AC-26):** every Koog call site
+  (`AIAgent(...)`, `PromptExecutor.execute`/`.run`, the auto-configured executor beans) gets
+  KDoc explaining the concept, an inline `//` comment for that specific call, and a
+  `docs.koog.ai` link. Plain Spring/domain code (DTOs, controller plumbing) keeps normal KDoc
+  only.
+- **Test isolation:** `ai.koog:agents-test`'s `getMockExecutor` replaces the real
+  `anthropicExecutor`/`openAIExecutor` beans in the test `ApplicationContext` (via
+  `@TestConfiguration` + `@Primary`), so `AgentControllerTest`/`AgentServiceTest` never call a
+  real LLM API — matching FR-06's testability requirement from this step onward.
+- **README grows incrementally (AC-27/29):** step 2's PR adds a "Step 2: AI Agent Chat"
+  section to `README.md` with run instructions (env vars `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`) and an example `curl` request/response for `/api/v1/agent/chat`.
 
 ## Implementation Steps
 
-### Step 0: Branch & build realignment (Boot 4 → 3.5.x)
-- [ ] Create branch `step1-money-transfer` from `master`.
-- [ ] `gradle/libs.versions.toml` — make the catalog the single source of truth. Set
-      `spring-boot = "3.5.x"` (latest patch), add aliases: `spring-dependency-management`
-      plugin, `springdoc` (`springdoc-openapi-starter-webmvc-ui`, latest 2.8.x), and library
-      aliases for the starters below (versions Boot-BOM-managed where possible). **Keep** the
-      existing `koog`/`kotlin` entries but do **not** reference koog in step 1.
+### Step 0: Version catalog & build dependencies (FR-06)
+- [ ] `gradle/libs.versions.toml`:
+  - Bump `koog = "1.0.0"` entries to reflect the Spring starter's actual version — add a
+    separate `koogSpringBootStarter = "1.0.0-beta"` version (core `koog-agents`/`agents-tools`
+    stay `1.0.0`; the Spring starter artifact is independently versioned `-beta`).
+  - Add library aliases: `koog-spring-boot-starter = { module = "ai.koog:koog-spring-boot-starter", version.ref = "koogSpringBootStarter" }`
+    and `koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }`.
+  - Add `kotlin-serialization` version.ref use (Koog requires kotlinx-serialization
+    1.10.0+); confirm the Boot 3.5.x BOM's transitive kotlinx-serialization satisfies this,
+    else pin explicitly.
 - [ ] `build.gradle.kts`:
-  - Plugins: `org.springframework.boot` → **3.5.x**; keep `kotlin("jvm")`,
-    `kotlin("plugin.spring")`, `io.spring.dependency-management`. Remove the
-    `val koogVersion by extra { … }` line.
-  - Dependencies (replace Boot-4 starters): `spring-boot-starter-web`,
-    `spring-boot-starter-data-jdbc`, `spring-boot-starter-actuator`,
-    `spring-boot-docker-compose` (developmentOnly), `flyway-core`,
-    `flyway-database-postgresql`, `postgresql` (runtimeOnly),
-    `com.fasterxml.jackson.module:jackson-module-kotlin` (**Jackson 2**, drop
-    `tools.jackson.*`), `kotlin-reflect`, `springdoc-openapi-starter-webmvc-ui`.
-  - Test deps: `spring-boot-starter-test` (replaces `-webmvc-test`/`-actuator-test`),
-    `spring-boot-testcontainers`, `org.testcontainers:postgresql`,
-    `org.testcontainers:junit-jupiter`, `mockk`, `junit-platform-launcher`.
-  - Keep Java toolchain **25** and `-Xjsr305=strict`.
-- [ ] Rename app class `KoogSpringBootApplication` → keep as-is (name is fine) but no koog imports.
-- Files: `build.gradle.kts`, `gradle/libs.versions.toml`, (maybe) `gradle-wrapper.properties`.
+  - `implementation(libs.koog.spring.boot.starter)` (replaces the unused placeholder
+    `koog-agents`/`koog-tools`/`koog-executor-openai-client` aliases carried since step 1 —
+    the starter transitively brings the agent/tool/executor jars).
+  - `testImplementation(libs.koog.agents.test)`.
+  - Apply `alias(libs.plugins.kotlin.serialization)` (Koog's agent/tool models use
+    kotlinx-serialization).
+- Files: `gradle/libs.versions.toml`, `build.gradle.kts`.
 
-### Step 1: Database schema & Docker Compose (FR-01, FR-02)
-- [ ] `compose.yaml` — `postgres:17` service (db `moneytransfer`, user/password), port 5432.
-- [ ] `src/main/resources/db/migration/V1__init.sql`:
-  - `account(id BIGSERIAL PK, owner_name TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'EUR', balance NUMERIC(19,2) NOT NULL CHECK (balance >= 0))`
-  - `account` also carries profile fields `first_name TEXT NOT NULL, last_name TEXT, phone_number TEXT` (single source of truth for display).
-  - `contact(id BIGSERIAL PK, owner_account_id BIGINT NOT NULL REFERENCES account(id), contact_account_id BIGINT NOT NULL REFERENCES account(id), nickname TEXT, UNIQUE(owner_account_id, contact_account_id))` — a thin edge; name/phone are NOT duplicated here.
-  - `transfer(id BIGSERIAL PK, sender_account_id BIGINT NOT NULL REFERENCES account(id), recipient_account_id BIGINT NOT NULL REFERENCES account(id), amount NUMERIC(19,2) NOT NULL CHECK (amount > 0), currency TEXT NOT NULL DEFAULT 'EUR', purpose TEXT, status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`
-  - Indexes: `contact(owner_account_id)`, `transfer(sender_account_id)`.
-- [ ] `V2__seed.sql`: insert accounts with explicit ids, names/phones + starting balances
-      (Alice Smith, Bob Johnson, Charlie Williams, Daniel Anderson, Daniel Craig — two Daniels
-      for ambiguity), then the demo account's 5 contact **edges** to those accounts (one with a
-      nickname), and advance the id sequences.
-- [ ] `application.properties`: `spring.flyway.enabled=true`, `spring.jpa`-none,
-      `spring.docker.compose.lifecycle-management=start-and-stop`,
-      `springdoc.swagger-ui.path=/swagger-ui.html`.
-- Files: `compose.yaml`, `db/migration/V1__init.sql`, `V2__seed.sql`, `application.properties`.
+### Step 1: Configuration (FR-06)
+- [ ] `src/main/resources/application.properties`:
+  - `ai.koog.anthropic.api-key=${ANTHROPIC_API_KEY:}` and
+    `ai.koog.openai.api-key=${OPENAI_API_KEY:}` (both `enabled` default `true`; only the
+    key needs to be set — document that a blank key disables that provider's
+    auto-configuration).
+  - `app.agent.anthropic-model=Sonnet_4_6`, `app.agent.anthropic-complex-model=Opus_4_7`,
+    `app.agent.openai-fallback-model=GPT5_4` (our own properties, see Architecture Decisions).
+- [ ] Confirm the app **fails to start clearly** (not silently) if both API keys are blank —
+  covered by the `AgentModelProperties`/`AgentService` construction-time check in Step 2
+  below, not by Koog itself.
+- Files: `application.properties`.
 
-### Step 2: Domain layer — aggregates & repositories (FR-01, FR-02, FR-03)
-- [ ] `account/Account.kt` — `@Table("account") data class Account(@Id id: Long?, firstName, lastName?, phoneNumber?, currency="EUR", balance: BigDecimal)` (profile + wallet).
-- [ ] `account/AccountRepository.kt` — `CrudRepository<Account, Long>` with:
-  - `@Modifying @Query("UPDATE account SET balance = balance - :amount WHERE id = :id AND balance >= :amount") fun debit(id, amount): Int`
-  - `@Modifying @Query("UPDATE account SET balance = balance + :amount WHERE id = :id") fun credit(id, amount): Int`
-- [ ] `contact/Contact.kt` — thin edge `(ownerAccountId, contactAccountId, nickname?)`.
-- [ ] `contact/ContactRepository.kt` — `CrudRepository`, `findByOwnerAccountId(id)`, and a
-      name-search query that **joins `account`** (matches the linked account's `first_name` or
-      the contact `nickname`).
-- [ ] `transfer/Transfer.kt` — aggregate + `enum TransferStatus { COMPLETED, REVERSED, REVERSAL }`.
-- [ ] `transfer/TransferRepository.kt` — `CrudRepository`, `findBySenderAccountIdOrderByCreatedAtDesc(id)`.
-- Files: the six files above.
+### Step 2: Agent domain/service layer (FR-07)
+- [ ] `agent/AgentModelProperties.kt` — `@ConfigurationProperties("app.agent")` data class:
+      `anthropicModel: String`, `anthropicComplexModel: String`, `openAiFallbackModel: String`;
+      resolves each to `AnthropicModels`/`OpenAIModels.Chat` via `valueOf` at bean-creation
+      time (fail fast on a typo'd property, not on first request).
+- [ ] `agent/ConversationStore.kt` — in-memory store: `data class Turn(role, content)`,
+      `class ConversationStore { fun historyOf(id: UUID): List<Turn>; fun append(id: UUID, userTurn: Turn, assistantTurn: Turn) }`
+      backed by `ConcurrentHashMap<UUID, List<Turn>>` (Koog concept comment: this is the seam
+      step 3/5 replace with real checkpoint storage — link to `docs.koog.ai` persistence page).
+- [ ] `agent/AgentService.kt` — `fun chat(accountId: Long, message: String, conversationId: UUID?): AgentChatResult`:
+      resolves/creates `conversationId`, renders `ConversationStore` history + new message into
+      one input string, runs `AIAgent(anthropicExecutor, anthropicModel).run(input)` — **KDoc +
+      inline comment + docs.koog.ai link on the `AIAgent` construction** — catches any
+      exception and retries via `AIAgent(openAIExecutor, openAiFallbackModel).run(input)`,
+      appends the turn to `ConversationStore`, returns `AgentChatResult(reply, conversationId)`.
+- [ ] `common/DomainExceptions.kt` — add `AgentUnavailableException` (both providers fail) →
+      mapped to `503` in the global advice.
+- Files: `AgentModelProperties.kt`, `ConversationStore.kt`, `AgentService.kt`, exception addition.
 
-### Step 3: Application/service layer (FR-03, FR-04, FR-05)
-- [ ] `transfer/TransferService.kt` — `@Transactional fun transfer(senderAccountId, recipientAccountId, amount, purpose): Transfer`:
-      validate `amount > 0`; verify both accounts exist; `debit(...)` → `0` ⇒
-      `InsufficientFundsException`; `credit(...)`; save `Transfer(COMPLETED)`.
-- [ ] `contact/ContactService.kt` — `getContacts(accountId)`, `findByName(accountId, name)`; returns `ResolvedContact` (display name/phone sourced from the linked account).
-- [ ] `account/AccountService.kt` — `getAccount(id)`, `getBalance(id)` (getBalance is used by
-      the API now; the *tool* wrapper comes at step 4).
-- [ ] Domain exceptions: `InsufficientFundsException`, `UnknownAccountException`,
-      `InvalidAmountException` in `common/`.
-- Files: services + exceptions.
+### Step 3: (No separate infra/adapter layer)
+The auto-configured `anthropicExecutor`/`openAIExecutor` beans from the Koog Spring Boot
+starter **are** the adapter layer; nothing extra for step 2 (mirrors step 1's plan, which
+also had no separate infra step).
 
-### Step 4: (No separate infra/adapter layer)
-Spring Data JDBC repositories are the persistence adapter; nothing extra for step 1.
+### Step 4: API / presentation layer (FR-07)
+- [ ] `agent/AgentController.kt` — `POST /api/v1/agent/chat` (`suspend fun`, matching Koog's
+      own documented pattern for calling suspend `PromptExecutor`/`AIAgent` APIs from Spring
+      MVC); body `ChatRequest(message: String, conversationId: UUID? = null)`, sender from
+      `X-User-Id`; → `200 ChatResponse(reply: String, conversationId: UUID)`.
+- [ ] DTOs: `ChatRequest`, `ChatResponse`.
+- [ ] `common/GlobalExceptionHandler.kt` — add the `AgentUnavailableException` → `503`
+      `ProblemDetail` mapping.
+- [ ] `common/OpenApiConfig.kt` — no change needed (springdoc picks up the new controller
+      automatically); verify Swagger UI lists `/api/v1/agent/chat`.
+- Files: `AgentController.kt`, DTOs, advice update.
 
-### Step 5: API / presentation layer (FR-05)
-- [ ] `transfer/TransferController.kt` — `POST /api/v1/transfers` (body `TransferRequest{recipientAccountId, amount, purpose}`, sender from `X-User-Id`) → `201` `TransferResponse`; `GET /api/v1/transfers` (for `X-User-Id`).
-- [ ] `contact/ContactController.kt` — `GET /api/v1/contacts` (list for `X-User-Id`); `GET /api/v1/contacts?name=` (ambiguous lookup → candidates).
-- [ ] `account/AccountController.kt` — `GET /api/v1/accounts/{id}`, `GET /api/v1/accounts/{id}/balance`.
-- [ ] DTOs: `TransferRequest`, `TransferResponse`, `ContactResponse`, `AccountResponse`, `BalanceResponse`.
-- [ ] `common/GlobalExceptionHandler.kt` — `@RestControllerAdvice` mapping domain exceptions
-      to `ProblemDetail` (404 unknown account, 422 insufficient funds, 400 invalid amount).
-- [ ] `common/OpenApiConfig.kt` — `@OpenAPIDefinition` info/title; Swagger UI at `/swagger-ui.html`.
-- Files: three controllers, DTOs, advice, OpenAPI config.
+### Step 5: Tests (FR-06; AC-09, AC-10, AC-28)
+- [ ] **Unit** `AgentServiceTest` (using `ai.koog:agents-test`'s `getMockExecutor`/
+      `mockLLMAnswer`): happy path returns a reply + stable `conversationId`; a second call
+      with the same `conversationId` sees prior-turn context in the rendered input (assert via
+      a captured prompt/spy); Anthropic mock throws → OpenAI mock still answers (**AC-28**:
+      the fallback test explicitly fails the Anthropic client and asserts the OpenAI path
+      completes the same request).
+- [ ] **Context/smoke test** `AgentAutoConfigurationTest` (`@SpringBootTest`, dummy
+      `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` test env values): context loads and
+      `multiLLMPromptExecutor` bean is present and non-null — proves **AC-09**.
+- [ ] **Integration** `AgentControllerTest` (`@SpringBootTest` + MockMvc, mock executor beans
+      substituted via `@TestConfiguration`/`@Primary` so no real LLM call happens): `POST
+      /api/v1/agent/chat` returns `200` with a reply body and a `conversationId` — proves
+      **AC-10**; Swagger/`/v3/api-docs` includes the new endpoint.
+- Files: `src/test/kotlin/dev/aparikh/moneytransfer/agent/**`.
 
-### Step 6: Tests (FR-03; AC-01…AC-08)
-- [ ] **Unit** `TransferServiceTest` (MockK): success debits/credits & saves; `amount<=0` →
-      `InvalidAmountException`; unknown sender/recipient → `UnknownAccountException`;
-      `debit` returns `0` → `InsufficientFundsException` and no credit/save.
-- [ ] **Repository slice** `@DataJdbcTest` + Testcontainers (`@ServiceConnection`):
-      `debit` succeeds when funds sufficient / returns `0` when not; `credit` adds;
-      `ContactRepository` name search returns 2 candidates for "Daniel".
-- [ ] **Integration** `@SpringBootTest` + MockMvc + Testcontainers: happy-path transfer
-      persists balances; insufficient funds → 422 `ProblemDetail`; contacts list & ambiguous
-      lookup; Swagger UI + `/v3/api-docs` reachable.
-- [ ] **Concurrency** `TransferConcurrencyIT`: N parallel transfers from one account whose
-      total exceeds balance → final balance ≥ 0, exactly the affordable subset succeed, no
-      lost updates (real Postgres via Testcontainers).
-- [ ] **Persistence-survives-restart** assertion (context reload / re-query) for AC-02.
-- Files: `src/test/kotlin/dev/aparikh/moneytransfer/**` + a `TestcontainersConfiguration`.
+### Step 6: Documentation (AC-26, AC-27, AC-29)
+- [ ] Add the Koog teaching comments (KDoc + inline `//` + `docs.koog.ai` links) at every
+      Koog call site introduced this step: `AIAgent` construction, the auto-configured
+      executor bean injection points, and `ConversationStore` (as the pre-checkpoint seam).
+- [ ] `README.md` — add "Step 2: AI Agent Chat" section: required env vars, how to start the
+      app, and an example `curl -X POST /api/v1/agent/chat -H "X-User-Id: 1" -d '{"message":"..."}'`
+      request/response pair.
+- Files: touched source files (comments only), `README.md`.
 
 ## Acceptance Criteria Mapping
 | AC | Verified By |
 |----|-------------|
-| AC-01: build passes w/ domain + REST | `./gradlew build` green (all suites) |
-| AC-02: transfer persists balances, survives restart | `TransferIntegrationTest#transferPersistsBalances` + re-query |
-| AC-03: over-balance rejected, no change | `TransferServiceTest#insufficientFunds`, `TransferIntegrationTest#returns422` |
-| AC-04: ambiguous "Daniel" → multiple | `ContactRepositoryTest#findByNameReturnsCandidates`, `ContactControllerTest#ambiguousLookup` |
-| AC-05: Swagger + `ProblemDetail` | `OpenApiSmokeTest#apiDocsAndSwaggerUi`, advice tests |
-| AC-06: Flyway schema+seed on clean DB | Testcontainers boot (fresh container) in every IT |
-| AC-07: concurrent transfers consistent | `TransferConcurrencyIT#noLostUpdatesNoOverdraft` |
-| AC-08: unit+integration coverage | whole `src/test` suite |
+| AC-09: Koog starter starts, both providers configured, `multiLLMPromptExecutor` bean available | `AgentAutoConfigurationTest#contextLoadsWithMultiLlmExecutor` |
+| AC-10: `POST /api/v1/agent/chat` returns an LLM text reply (no tools yet) | `AgentControllerTest#chatReturnsReplyAndConversationId` |
+| AC-25: every Koog-related version lives in `gradle/libs.versions.toml` | manual review of `build.gradle.kts` (no inline versions) |
+| AC-26: Koog call sites carry teaching comments | manual review — Step 6 |
+| AC-28 (partial — proven at this step, exercised again at step 3+): Anthropic error → OpenAI `gpt-5.4` fallback completes the same prompt | `AgentServiceTest#fallsBackToOpenAiWhenAnthropicErrors` |
+| AC-29: README gets a step-2 usage section | manual review of `README.md` diff |
 
 ## Risks & Mitigations
-- **Gradle 9.5.1 vs Boot 3.5.x plugin:** the Spring Boot Gradle plugin on 3.5.x may not
-  fully support Gradle 9.5.1. → **Verify first**; if it fails, set the wrapper to the latest
-  Gradle 8.x supported by Boot 3.5.x.
-- **Java 25 + Boot 3.5.x:** confirmed supported by the user, but a given 3.5.x *patch* may
-  lag. → Pin the latest 3.5.x patch; if bytecode/toolchain errors appear, confirm the patch
-  that added Java 25 support.
-- **`debit` rows-affected ambiguity** (0 = insufficient *or* missing account): → check
-  account existence **before** `debit`, so a post-existence `0` unambiguously means
-  insufficient funds.
-- **Flyway seed runs in prod too:** acceptable for a contrived demo; → keep seed in a
-  clearly-named `V2__seed.sql` so it can be gated by a Flyway placeholder/profile later.
-- **springdoc + Boot 3.5.x version match:** → pin springdoc 2.8.x (Boot-3-compatible);
-  verify Swagger UI loads in the integration smoke test.
-- **Koog deps lingering from master:** → ensure step-1 `build.gradle.kts` does not reference
-  koog libraries, so the module compiles without an OpenAI key.
+- **Koog Spring Boot starter is `1.0.0-beta`:** API surface may shift before GA. →
+  Pin the exact version in the catalog; re-verify bean names/config properties against
+  Koog's changelog before starting step 3.
+- **Spec model names don't exist as Koog enum entries** (`Sonnet 5`, `Opus 4.8`): → mapped to
+  the closest available entries (`Sonnet_4_6`, `Opus_4_7`) via configurable properties, so a
+  future Koog release with true `Sonnet_5`/`Opus_4_8` entries is a config change only. `gpt-5.4`
+  maps exactly to `GPT5_4`, no substitution needed there.
+- **Koog's automatic fault tolerance stops at "same provider, transient error":**
+  `RetryingLLMClient` (already wired into every auto-configured executor) retries 429/5xx/
+  timeout-shaped errors on the *same* provider with backoff; `MultiLLMPromptExecutor`'s
+  `fallback` only triggers on a *missing* client, not on a client that retried and still
+  failed. → `AgentService` hand-rolls the cross-provider try/catch instead of relying on
+  `FallbackPromptExecutorSettings` for it. Test AC-28 by making the mocked Anthropic
+  executor fail in a way that exhausts retry (or isn't retryable at all, e.g. an auth
+  error), not just a single transient error `RetryingLLMClient` would absorb on its own.
+- **No documented multi-turn `AIAgent` + Spring pattern:** → conversation history is replayed
+  into a single input string via `ConversationStore` (our own design, documented above); if a
+  later Koog release adds an official session/continuation API, this is the file to revisit,
+  not the controller contract.
+- **`app.agent.anthropic-complex-model` currently has no trigger:** unused until step 4's
+  custom strategy. → wired now via `AgentModelProperties` so step 4 only adds the routing
+  logic, not new config plumbing; flagged here so it isn't mistaken for a step-2 bug.
+- **Coroutines in a servlet (Spring MVC, not WebFlux) app:** `AIAgent.run`/`PromptExecutor.execute`
+  are `suspend` functions. → use `suspend fun` controller methods directly (Spring MVC 6.1+
+  supports this natively), matching Koog's own documented sample controller — no manual
+  `runBlocking` needed.
+- **Secrets:** `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` only via env vars, never committed;
+  `AgentAutoConfigurationTest` uses obviously-fake test values.
 
 ## Estimated Complexity
-**Medium.** The domain and REST surface are small, but the step carries three non-trivial
-concerns: the Boot 4→3.5.x realignment, correct atomic-debit concurrency semantics (with a
-real-Postgres concurrency test), and Testcontainers/Flyway/docker-compose wiring. None are
-deep, but together they make step 1 more than a CRUD skeleton.
+**Medium.** The Spring wiring itself is small (one starter dependency + two config keys),
+but the step carries two non-trivial, spec-driven design decisions with no official Koog
+sample to copy: the hand-rolled error-fallback (Koog's built-in fallback doesn't do what
+the spec asks) and in-memory conversation continuity ahead of step 5's real checkpointing.

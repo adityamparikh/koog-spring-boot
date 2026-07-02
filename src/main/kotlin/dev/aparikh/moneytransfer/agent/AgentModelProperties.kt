@@ -1,0 +1,25 @@
+package dev.aparikh.moneytransfer.agent
+
+import org.springframework.boot.context.properties.ConfigurationProperties
+
+/**
+ * Model selection for the agent, bound from `app.agent.*`.
+ *
+ * Values are Koog **model ids** (e.g. `claude-sonnet-4-6`, `gpt-5.4`) rather than Kotlin
+ * symbol names, because Koog exposes models as `val`s on an `object` (`AnthropicModels`,
+ * `OpenAIModels`) — not as an enum — so they are looked up by id via
+ * `LLModelDefinitions.modelsById()` in [AgentService], not by `valueOf`.
+ *
+ * @property anthropicModel everyday Anthropic model (feature.md's "Sonnet 5" → nearest
+ *   available Koog id `claude-sonnet-4-6`).
+ * @property anthropicComplexModel Anthropic model for complex turns (feature.md's "Opus 4.8"
+ *   → `claude-opus-4-7`). Wired now; first used by step 4's custom strategy.
+ * @property openAiFallbackModel OpenAI model used as the cross-provider error-fallback
+ *   (feature.md's `gpt-5.4`, an exact Koog id match).
+ */
+@ConfigurationProperties(prefix = "app.agent")
+data class AgentModelProperties(
+    val anthropicModel: String = "claude-sonnet-4-6",
+    val anthropicComplexModel: String = "claude-opus-4-7",
+    val openAiFallbackModel: String = "gpt-5.4",
+)
