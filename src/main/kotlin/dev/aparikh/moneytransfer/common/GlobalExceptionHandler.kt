@@ -22,6 +22,16 @@ class GlobalExceptionHandler {
         ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, ex.message ?: "Insufficient funds")
             .apply { title = "Insufficient funds" }
 
+    @ExceptionHandler(UnknownContactException::class)
+    fun handleUnknownContact(ex: UnknownContactException): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.message ?: "Contact not found")
+            .apply { title = "Contact not found" }
+
+    @ExceptionHandler(NoPendingInteractionException::class)
+    fun handleNoPendingInteraction(ex: NoPendingInteractionException): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.message ?: "Nothing to reply to")
+            .apply { title = "No pending interaction" }
+
     @ExceptionHandler(InvalidAmountException::class)
     fun handleInvalidAmount(ex: InvalidAmountException): ProblemDetail =
         ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.message ?: "Invalid amount")
