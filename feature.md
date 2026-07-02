@@ -33,7 +33,10 @@ step** for review and explicit go-ahead before the next begins.
 ## Delivery Strategy (branches & pauses)
 Each step is a branch built on top of the previous one. After each step the assistant
 **stops, shows a diff/summary of what changed, and waits for explicit approval** before
-starting the next step.
+starting the next step. Each step's PR also updates **`README.md`** with a usage section
+(run instructions + example requests) for the capability it introduced, so the usage guide
+grows **incrementally** toward the completion deliverable (AC-27) instead of being written
+all at once at the end.
 
 | Step | Branch | Builds on | Ingredient |
 |------|--------|-----------|------------|
@@ -317,8 +320,9 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - [ ] AC-24: Each step is on its own branch built atop the previous; work pauses after each step for review and explicit approval.
 - [ ] AC-25: Every library version is declared in `gradle/libs.versions.toml` at the latest stable compatible version.
 - [ ] AC-26: All Koog-related code (from step 2 on) carries teaching comments — KDoc explaining the concept, inline `//` comments at each Koog call site, and a `docs.koog.ai` link — at every Koog usage site (agents, tools, events, strategy, checkpointing, observability, rollback, compression, Spring AI).
-- [ ] AC-27: On completion (after step 10), a README usage guide documents how to run the app and walk through each scenario (happy-path transfer, ambiguous recipient, insufficient-balance cap-and-offer, undo/rollback, checkpoint resume, observability) with concrete example requests.
+- [ ] AC-27: The `README.md` usage guide is built **incrementally** — step 1 seeds it with the money-transfer REST usage, and each step 2–10 adds a section for its capability — and after step 10 it coherently documents how to run the app and walk through every scenario (happy-path transfer, ambiguous recipient, insufficient-balance cap-and-offer, undo/rollback, checkpoint resume, observability) with concrete example requests.
 - [ ] AC-28: Multi-LLM fallback — the agent defaults to Anthropic Sonnet 5 (Opus 4.8 for complex turns); when the Anthropic client errors, the same prompt completes via OpenAI `gpt-5.4` (verified with an `agents-test` mock that fails the Anthropic client).
+- [ ] AC-29: Every step from 2 onward updates `README.md` with a usage section (run instructions + example requests) for the capability it added.
 
 ## Technical Scope
 
@@ -452,3 +456,4 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 | 2026-07-01 | Added convention: Koog-related code (step 2 on) must carry teaching comments — KDoc + inline step comments + `docs.koog.ai` links (NFR + AC-26). |
 | 2026-07-01 | Added final deliverable: README usage guide with runnable scenario walkthroughs on completion (NFR + AC-27). |
 | 2026-07-01 | Switched LLM setup to `MultiLLMPromptExecutor`: Anthropic Sonnet 5 default + Opus 4.8 for hard calls, automatic error-fallback to OpenAI `gpt-5.4` (updates OQ-4, FR-06/07, AC-09; adds AC-28). |
+| 2026-07-01 | Adopted per-step README pattern: each step's PR adds a README usage section for its capability, growing incrementally toward AC-27 (Delivery Strategy + AC-27 reworded + AC-29). |
