@@ -80,28 +80,34 @@ pinned to 3.5.x. The **Java 25 toolchain is retained** (Boot 3.5.x supports Java
 ### Step 1 — `step1-money-transfer` (no AI)
 
 #### FR-01: Domain model (persisted aggregates)
-Model, as Spring Data JDBC aggregate roots:
-- `Account` (id, ownerName, currency = EUR, `balance: BigDecimal`) — one per person; the
-  `accountId` **is** the person's identity in this app (there is no separate user table).
-- `Contact` (id, ownerAccountId, name, lastName?, phoneNumber?, `linkedAccountId`) — an
-  address-book entry belonging to `ownerAccountId` that points at the recipient's account
-  via `linkedAccountId`.
+Model, as Spring Data JDBC aggregate roots (Venmo-style — the account is the source of truth,
+a contact is a thin edge):
+- `Account` (id, `firstName`, `lastName?`, `phoneNumber?`, currency = EUR, `balance: BigDecimal`)
+  — a person's **profile + wallet** and the **single source of truth** for display info and
+  balance; the `accountId` **is** the person's identity (there is no separate user table).
+- `Contact` (id, ownerAccountId, `contactAccountId`, `nickname?`) — a directed **edge** in an
+  owner's address book referencing another account (Venmo-"friend" style). It does **not**
+  duplicate the friend's name/phone; those resolve from the linked account. A unique
+  `(ownerAccountId, contactAccountId)` constraint prevents duplicate edges.
 - `Transfer` (id, senderAccountId, recipientAccountId, `amount: BigDecimal`, currency EUR,
   purpose, timestamp, status) — an immutable ledger row.
 
 **Identity & terminology:** a "user"/"person" is identified by their `accountId`. Transfers
 move money between accounts (`senderAccountId` → `recipientAccountId`). The agent tools work
 in terms of a **contact id**, which is resolved to the recipient's account via
-`Contact.linkedAccountId` **before** the ledger is touched. Money is `BigDecimal` mapped to
-SQL `NUMERIC`; currency is EUR throughout.
+`Contact.contactAccountId` **before** the ledger is touched. A contact's display name/phone
+are resolved from the linked account at read time (`nickname ?: account name`). Money is
+`BigDecimal` mapped to SQL `NUMERIC`; currency is EUR throughout. See `docs/data-model.md`
+for the ER diagram and relationships.
 
 #### FR-02: Persistence — Spring Data JDBC + Flyway
 Provide `AccountRepository`, `ContactRepository`, `TransferRepository` as Spring Data JDBC
 `CrudRepository`s. Define the schema via **Flyway** SQL migrations (`V1__init.sql`, …).
-Seed reference data (5 contacts: Alice Smith, Bob Johnson, Charlie Williams, and two
-Daniels; plus accounts with starting balances) via a Flyway seed migration or a seeding
-runner. PostgreSQL is provisioned locally through **Spring Boot Docker Compose support**
-(`compose.yaml` defining a `postgres` service); the app connects on startup.
+Seed reference data via a Flyway seed migration: accounts with names/phones/balances (incl.
+two accounts named "Daniel" so name lookups are ambiguous), plus the demo user's contact
+**edges** to those accounts (one carrying a nickname). PostgreSQL is provisioned locally
+through **Spring Boot Docker Compose support** (`compose.yaml` defining a `postgres` service);
+the app connects on startup.
 
 #### FR-03: Transfer service (atomic + concurrency-safe)
 `TransferService.transfer(senderAccountId, recipientAccountId, amount, purpose)` runs in a
@@ -117,9 +123,10 @@ or application-side retry is needed. Unknown parties are likewise rejected and n
 mutate balances.
 
 #### FR-04: Contact lookup
-`ContactService.getContacts(accountId)` returns the owner account's contacts.
-`ContactService.findByName(accountId, name)` returns zero, one, or many matching contacts
-(the "ambiguous recipient" case).
+`ContactService.getContacts(accountId)` returns the owner account's contacts, resolved for
+display (name/phone from the linked account). `ContactService.findByName(accountId, name)`
+matches on the linked account's name **or** the contact nickname (joining to `account`) and
+returns zero, one, or many resolved contacts (the "ambiguous recipient" case).
 
 #### FR-05: REST API + OpenAPI
 Expose under `/api/v1`: list contacts, get account/balance, create transfer, list
@@ -160,7 +167,7 @@ Implement a `MoneyTransferTools` class implementing Koog's `ToolSet`, exposing t
 - `chooseRecipient(accountId, confusingRecipientName)` — resolves an ambiguous/unknown
   recipient by returning candidate contacts to the user for selection (see FR-10 HITL).
 - `sendMoney(senderAccountId, amount, recipientContactId, purpose)` — resolves
-  `recipientContactId` to its `linkedAccountId`, then executes a transfer **after** user
+  `recipientContactId` to its `contactAccountId`, then executes a transfer **after** user
   confirmation (see FR-10).
 Register the tools in a `ToolRegistry` and attach to the agent.
 
@@ -431,10 +438,15 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
   conditional `UPDATE … WHERE balance >= :amount`** (no `@Version`, no read-modify-write).
   Step 5 adds Koog checkpoint tables to the *same* database — so business data is durable
   from step 1, agent conversation state from step 5.
-- **OQ-8 → RESOLVED (identity model):** A person is identified by their `accountId` (no
-  separate user table). `Contact` carries `ownerAccountId` + `linkedAccountId`; the agent's
-  `recipientContactId` is resolved to the recipient's account via `linkedAccountId` before
-  any ledger write. Transfers move money `senderAccountId` → `recipientAccountId`.
+- **OQ-8 → RESOLVED (identity model, Venmo-style):** A person is identified by their
+  `accountId` (no separate user table); the **`Account` is the single source of truth** for
+  profile (`firstName`, `lastName?`, `phoneNumber?`) and balance. A **`Contact` is a thin edge**
+  `(ownerAccountId, contactAccountId, nickname?)` referencing another account — it does **not**
+  duplicate the friend's name/phone (those resolve from the linked account). The agent's
+  `recipientContactId` is resolved to the recipient's account via `contactAccountId` before any
+  ledger write. Transfers move money `senderAccountId` → `recipientAccountId`. See
+  `docs/data-model.md` for the ER diagram. (Refined from an earlier saved-payee model that
+  stored name/phone on the contact + a `linkedAccountId`.)
 - **OQ-9 → RESOLVED (caller identity):** Authentication is out of scope, so the acting user
   (`accountId`) is passed **explicitly** by the caller — an `X-User-Id` header (or explicit
   request field/path variable) — not derived from a security context.
@@ -457,3 +469,4 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 | 2026-07-01 | Added final deliverable: README usage guide with runnable scenario walkthroughs on completion (NFR + AC-27). |
 | 2026-07-01 | Switched LLM setup to `MultiLLMPromptExecutor`: Anthropic Sonnet 5 default + Opus 4.8 for hard calls, automatic error-fallback to OpenAI `gpt-5.4` (updates OQ-4, FR-06/07, AC-09; adds AC-28). |
 | 2026-07-01 | Adopted per-step README pattern: each step's PR adds a README usage section for its capability, growing incrementally toward AC-27 (Delivery Strategy + AC-27 reworded + AC-29). |
+| 2026-07-01 | Refined domain to Venmo-style (OQ-8, FR-01/02/04/08): `Account` is profile+wallet source of truth; `Contact` is a thin edge (`linkedAccountId` → `contactAccountId`, + `nickname`), no duplicated name/phone. Added `docs/data-model.md` (ER diagram). |

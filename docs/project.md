@@ -34,6 +34,11 @@ Example structure:
 
 The application entry point is `KoogSpringBootApplication` (`@SpringBootApplication`).
 
+The domain is modelled Venmo-style: an `Account` is a person's profile + wallet (the single
+source of truth for name/phone/balance), a `Contact` is a thin edge referencing another
+account, and a `Transfer` is an immutable ledger row between two accounts. See
+`docs/data-model.md` for the ER diagram and relationships.
+
 ## Conventions
 - Package naming: feature-first — `dev.aparikh.moneytransfer.<feature>.<layer>`
 - Dependency versions: declared only in `gradle/libs.versions.toml` (the version catalog) — no inline version strings or `extra` properties in `build.gradle.kts`

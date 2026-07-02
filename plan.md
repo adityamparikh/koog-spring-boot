@@ -1,5 +1,10 @@
 # Implementation Plan: Money-Transfer Domain (Step 1 — `step1-money-transfer`)
 
+> **Status: implemented in PR #2.** All 8 acceptance criteria pass (5 unit + 7 Testcontainers
+> integration/concurrency tests, 12/12 green). The domain was refined to a **Venmo-style model**
+> (Account = profile+wallet source of truth; Contact = thin edge with `contactAccountId` +
+> `nickname`, no duplicated name/phone). See `docs/data-model.md` for the ER diagram.
+>
 > Scope: **Step 1 only** of `feature.md` — the persisted money-transfer application with
 > **no AI**. Covers FR-01…FR-05 and AC-01…AC-08. Koog is intentionally **not** added here
 > (it arrives at step 2). Work happens on branch `step1-money-transfer` cut from `master`.
@@ -66,25 +71,28 @@ Compose support**; integration tests use **Testcontainers**.
 - [ ] `compose.yaml` — `postgres:17` service (db `moneytransfer`, user/password), port 5432.
 - [ ] `src/main/resources/db/migration/V1__init.sql`:
   - `account(id BIGSERIAL PK, owner_name TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'EUR', balance NUMERIC(19,2) NOT NULL CHECK (balance >= 0))`
-  - `contact(id BIGSERIAL PK, owner_account_id BIGINT NOT NULL REFERENCES account(id), name TEXT NOT NULL, last_name TEXT, phone_number TEXT, linked_account_id BIGINT NOT NULL REFERENCES account(id))`
+  - `account` also carries profile fields `first_name TEXT NOT NULL, last_name TEXT, phone_number TEXT` (single source of truth for display).
+  - `contact(id BIGSERIAL PK, owner_account_id BIGINT NOT NULL REFERENCES account(id), contact_account_id BIGINT NOT NULL REFERENCES account(id), nickname TEXT, UNIQUE(owner_account_id, contact_account_id))` — a thin edge; name/phone are NOT duplicated here.
   - `transfer(id BIGSERIAL PK, sender_account_id BIGINT NOT NULL REFERENCES account(id), recipient_account_id BIGINT NOT NULL REFERENCES account(id), amount NUMERIC(19,2) NOT NULL CHECK (amount > 0), currency TEXT NOT NULL DEFAULT 'EUR', purpose TEXT, status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`
   - Indexes: `contact(owner_account_id)`, `transfer(sender_account_id)`.
-- [ ] `V2__seed.sql`: insert accounts with explicit ids + starting balances, then the 5
-      contacts (Alice Smith, Bob Johnson, Charlie Williams, Daniel Anderson, Daniel Craig)
-      owned by a demo account and linked to recipient accounts.
+- [ ] `V2__seed.sql`: insert accounts with explicit ids, names/phones + starting balances
+      (Alice Smith, Bob Johnson, Charlie Williams, Daniel Anderson, Daniel Craig — two Daniels
+      for ambiguity), then the demo account's 5 contact **edges** to those accounts (one with a
+      nickname), and advance the id sequences.
 - [ ] `application.properties`: `spring.flyway.enabled=true`, `spring.jpa`-none,
       `spring.docker.compose.lifecycle-management=start-and-stop`,
       `springdoc.swagger-ui.path=/swagger-ui.html`.
 - Files: `compose.yaml`, `db/migration/V1__init.sql`, `V2__seed.sql`, `application.properties`.
 
 ### Step 2: Domain layer — aggregates & repositories (FR-01, FR-02, FR-03)
-- [ ] `account/Account.kt` — `@Table("account") data class Account(@Id id: Long?, ownerName, currency="EUR", balance: BigDecimal)`.
+- [ ] `account/Account.kt` — `@Table("account") data class Account(@Id id: Long?, firstName, lastName?, phoneNumber?, currency="EUR", balance: BigDecimal)` (profile + wallet).
 - [ ] `account/AccountRepository.kt` — `CrudRepository<Account, Long>` with:
   - `@Modifying @Query("UPDATE account SET balance = balance - :amount WHERE id = :id AND balance >= :amount") fun debit(id, amount): Int`
   - `@Modifying @Query("UPDATE account SET balance = balance + :amount WHERE id = :id") fun credit(id, amount): Int`
-- [ ] `contact/Contact.kt` — aggregate with `ownerAccountId`, `linkedAccountId`.
-- [ ] `contact/ContactRepository.kt` — `CrudRepository`, plus `findByOwnerAccountId(id)` and
-      a name-search query (`... WHERE owner_account_id = :id AND lower(name) LIKE lower(:q)`).
+- [ ] `contact/Contact.kt` — thin edge `(ownerAccountId, contactAccountId, nickname?)`.
+- [ ] `contact/ContactRepository.kt` — `CrudRepository`, `findByOwnerAccountId(id)`, and a
+      name-search query that **joins `account`** (matches the linked account's `first_name` or
+      the contact `nickname`).
 - [ ] `transfer/Transfer.kt` — aggregate + `enum TransferStatus { COMPLETED, REVERSED, REVERSAL }`.
 - [ ] `transfer/TransferRepository.kt` — `CrudRepository`, `findBySenderAccountIdOrderByCreatedAtDesc(id)`.
 - Files: the six files above.
@@ -93,7 +101,7 @@ Compose support**; integration tests use **Testcontainers**.
 - [ ] `transfer/TransferService.kt` — `@Transactional fun transfer(senderAccountId, recipientAccountId, amount, purpose): Transfer`:
       validate `amount > 0`; verify both accounts exist; `debit(...)` → `0` ⇒
       `InsufficientFundsException`; `credit(...)`; save `Transfer(COMPLETED)`.
-- [ ] `contact/ContactService.kt` — `getContacts(accountId)`, `findByName(accountId, name)`.
+- [ ] `contact/ContactService.kt` — `getContacts(accountId)`, `findByName(accountId, name)`; returns `ResolvedContact` (display name/phone sourced from the linked account).
 - [ ] `account/AccountService.kt` — `getAccount(id)`, `getBalance(id)` (getBalance is used by
       the API now; the *tool* wrapper comes at step 4).
 - [ ] Domain exceptions: `InsufficientFundsException`, `UnknownAccountException`,
