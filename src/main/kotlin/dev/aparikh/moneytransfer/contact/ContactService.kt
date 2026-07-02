@@ -2,6 +2,7 @@ package dev.aparikh.moneytransfer.contact
 
 import dev.aparikh.moneytransfer.account.AccountRepository
 import dev.aparikh.moneytransfer.common.UnknownAccountException
+import dev.aparikh.moneytransfer.common.UnknownContactException
 import org.springframework.stereotype.Service
 
 /**
@@ -30,6 +31,18 @@ class ContactService(
     /** Contacts of [accountId] matching [name] by linked-account name or nickname (may be ambiguous). */
     fun findByName(accountId: Long, name: String): List<ResolvedContact> =
         contacts.searchByName(accountId, name).map { it.resolve() }
+
+    /**
+     * Resolves a single contact [contactId] within [ownerAccountId]'s address book — used to
+     * map an agent-supplied `recipientContactId` to its account before a transfer.
+     *
+     * @throws UnknownContactException if the contact does not exist or is not owned by [ownerAccountId]
+     */
+    fun getContact(ownerAccountId: Long, contactId: Long): ResolvedContact =
+        contacts.findById(contactId)
+            .filter { it.ownerAccountId == ownerAccountId }
+            .map { it.resolve() }
+            .orElseThrow { UnknownContactException(contactId) }
 
     private fun Contact.resolve(): ResolvedContact {
         val account = accounts.findById(contactAccountId)

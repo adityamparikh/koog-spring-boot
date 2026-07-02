@@ -1,7 +1,8 @@
 package dev.aparikh.moneytransfer.agent
 
-import ai.koog.prompt.Prompt
-import ai.koog.prompt.dsl.prompt
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.prompt.executor.clients.LLModelDefinitions
 import ai.koog.prompt.executor.clients.anthropic.AnthropicModels
 import ai.koog.prompt.executor.clients.modelsById
@@ -9,92 +10,86 @@ import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
 import dev.aparikh.moneytransfer.common.AgentUnavailableException
+import dev.aparikh.moneytransfer.common.InsufficientFundsException
+import dev.aparikh.moneytransfer.common.NoPendingInteractionException
+import dev.aparikh.moneytransfer.common.UnknownAccountException
+import dev.aparikh.moneytransfer.common.UnknownContactException
+import dev.aparikh.moneytransfer.contact.ContactService
+import dev.aparikh.moneytransfer.transfer.TransferService
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
 import java.util.UUID
 
-/** The agent's reply plus the conversation it belongs to (new or continued). */
-data class AgentChatResult(val reply: String, val conversationId: UUID)
+/** The kind of turn the API is reporting back to the caller. */
+enum class InteractionType { ANSWER, CLARIFICATION, CONFIRMATION }
+
+/** The agent's tagged reply: plain [ANSWER], a recipient [CLARIFICATION], or a transfer [CONFIRMATION]. */
+data class AgentChatResult(
+    val reply: String,
+    val conversationId: UUID,
+    val type: InteractionType,
+    val candidates: List<ContactCandidate> = emptyList(),
+    val transferSummary: String? = null,
+)
 
 /**
- * Single-turn conversational agent with multi-LLM fallback.
+ * Tool-enabled conversational agent over the money-transfer domain.
  *
- * This follows Koog's documented **`RobustAIService.generateWithFallback`** pattern
- * (https://docs.koog.ai/spring-boot/#llm-provider-fallback): inject the aggregate
- * `multiLLMPromptExecutor` bean and **iterate over a list of models from different
- * providers**, calling `execute(prompt, model)` on each in a try/catch. Because the executor
- * dispatches by `model.provider`, each iteration targets a different provider, so a failed
- * call falls through to the next.
+ * Each `/chat` turn builds an [AIAgent] with a per-request [MoneyTransferTools] `ToolSet`
+ * (registered via `ToolRegistry`), `handleEvents { … }` for observability, and the step-2
+ * multi-LLM fallback loop (Anthropic → OpenAI). The default `singleRunStrategy()` drives the
+ * LLM↔tool loop until the model produces a text answer. https://docs.koog.ai/tools-overview/
  *
- * **Why this hand-rolled loop and not `MultiLLMPromptExecutor.fallback`:** the built-in
- * `FallbackPromptExecutorSettings` only routes when *no client is registered* for a provider —
- * it never catches a registered client's runtime error. The per-provider `RetryingLLMClient`
- * (inside each executor) handles transient same-provider retries; this loop handles
- * cross-provider failover (feature.md FR-07/AC-28: Anthropic error → OpenAI `gpt-5.4`).
+ * HITL is plain multi-turn conversation (the transcript in [ConversationStore] is the state) plus
+ * a deterministic confirm-gate: `sendMoney` only *stages* a transfer, and `reply(...)` executes
+ * it **app-side** once the user affirms — so no money moves without an explicit "yes".
  */
 @Service
 class AgentService(
-    // The single aggregate executor holding every configured provider's (retry-wrapped) client.
-    // It always exists — even with zero API keys the starter creates it with an empty client
-    // set — so an unconfigured provider just throws and the loop advances to the next model.
     @param:Qualifier("multiLLMPromptExecutor") private val multiLLMPromptExecutor: PromptExecutor,
     private val conversations: ConversationStore,
+    private val pending: PendingInteractionStore,
+    private val contactService: ContactService,
+    private val transferService: TransferService,
+    private val affirmationInterpreter: AffirmationInterpreter,
     properties: AgentModelProperties,
 ) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    // Resolve model ids → LLModel at construction so a typo'd property fails the context on
-    // startup, not on the first request. `anthropicComplexModel` is validated now but only
-    // routed to by step 4's custom strategy.
     private val anthropicModel = resolve(AnthropicModels, properties.anthropicModel)
-    private val anthropicComplexModel = resolve(AnthropicModels, properties.anthropicComplexModel)
     private val openAiFallbackModel = resolve(OpenAIModels, properties.openAiFallbackModel)
 
-    // The ordered fallback chain (the `llms` list in Koog's RobustAIService): Anthropic first,
-    // OpenAI second. Each dispatches to its provider via `multiLLMPromptExecutor`.
+    // Ordered fallback chain (Koog RobustAIService pattern): Anthropic first, then OpenAI.
     private val llms: List<LLModel> = listOf(anthropicModel, openAiFallbackModel)
 
-    init {
-        logger.info(
-            "Agent models — primary={}, complex={}, fallback={}",
-            anthropicModel.id, anthropicComplexModel.id, openAiFallbackModel.id,
-        )
-    }
-
     /**
-     * Runs one conversational turn for [accountId] within [conversationId] (a new one is
-     * created when null), replaying prior turns as prompt context. Walks [llms]: Anthropic
-     * first, then OpenAI on any Anthropic error.
-     *
-     * `suspend` all the way — `PromptExecutor.execute` is suspending and Spring MVC invokes
-     * suspending controller methods directly, so there is no `runBlocking` bridge.
-     *
-     * @throws AgentUnavailableException if every provider in [llms] fails.
+     * Runs one conversational turn. A fresh `/chat` starts a new intent, so any stale pending
+     * clarification/confirmation for this conversation is discarded first (edge rule). Returns a
+     * response tagged by what the turn produced.
      */
     suspend fun chat(accountId: Long, message: String, conversationId: UUID?): AgentChatResult {
         val id = conversationId ?: UUID.randomUUID()
-        val prompt = buildPrompt(accountId, conversations.historyOf(id), message)
+        pending.clear(id) // new intent — a forgotten "yes" can't fire a stale transfer later
+        val input = renderConversation(conversations.historyOf(id), message)
 
         var lastError: Exception? = null
         for ((index, model) in llms.withIndex()) {
             try {
-                // execute() dispatches to model.provider's client; textContent() concatenates
-                // the assistant message's text parts (Koog 1.0.0 returns a single Message.Assistant).
-                val reply = multiLLMPromptExecutor.execute(prompt, model).textContent()
+                val reply = runAgent(accountId, id, model, input)
                 conversations.append(id, Turn(Role.USER, message), Turn(Role.ASSISTANT, reply))
-                return AgentChatResult(reply, id)
+                return tag(reply, id)
             } catch (e: CancellationException) {
-                throw e // never swallow coroutine cancellation
+                throw e
             } catch (e: Exception) {
                 lastError = e
                 val next = llms.getOrNull(index + 1)
                 if (next != null) {
-                    logger.warn("LLM call on {} failed; falling back to {}", model.id, next.id, e)
+                    logger.warn("Agent run on {} failed; falling back to {}", model.id, next.id, e)
                 } else {
-                    logger.error("LLM call on {} failed and no fallback remains", model.id, e)
+                    logger.error("Agent run on {} failed and no fallback remains", model.id, e)
                 }
             }
         }
@@ -102,31 +97,127 @@ class AgentService(
     }
 
     /**
-     * Builds the prompt for a turn: a system message (carrying the acting [accountId] as
-     * context — tools will act on it from step 3), the prior turns as proper user/assistant
-     * messages, then the new user message. Internal so it can be unit-tested.
+     * Answers whatever the conversation is awaiting. A pending **clarification** is resolved by
+     * re-running the agent with [answer] as the next message (the LLM re-derives the amount from
+     * the transcript). A pending **confirmation** is resolved **app-side**: affirm → execute the
+     * staged transfer, deny → discard, unclear → re-prompt.
+     *
+     * @throws NoPendingInteractionException if nothing is awaiting a reply.
      */
-    internal fun buildPrompt(accountId: Long, history: List<Turn>, message: String): Prompt =
-        prompt("money-transfer-chat") {
-            system("$SYSTEM_PROMPT You are assisting account $accountId.")
-            history.forEach { turn ->
-                when (turn.role) {
-                    Role.USER -> user(turn.content)
-                    Role.ASSISTANT -> assistant(turn.content)
-                }
-            }
-            user(message)
+    suspend fun reply(accountId: Long, conversationId: UUID, answer: String): AgentChatResult =
+        when (val interaction = pending.get(conversationId)) {
+            is PendingInteraction.Clarification -> chat(accountId, answer, conversationId)
+            is PendingInteraction.Confirmation -> resolveConfirmation(conversationId, interaction, answer)
+            null -> throw NoPendingInteractionException(conversationId)
         }
+
+    private fun resolveConfirmation(
+        conversationId: UUID,
+        confirmation: PendingInteraction.Confirmation,
+        answer: String,
+    ): AgentChatResult {
+        val staged = confirmation.staged
+        return when (affirmationInterpreter.interpret(answer)) {
+            Affirmation.AFFIRM -> {
+                pending.clear(conversationId)
+                val reply = try {
+                    transferService.transfer(staged.senderAccountId, staged.recipientAccountId, staged.amount, staged.purpose)
+                    "Done — sent €${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
+                } catch (e: InsufficientFundsException) {
+                    // Step 3 fails honestly here; step 4 adds the "offer up to your balance" flow.
+                    "That transfer would exceed your balance, so nothing was sent."
+                } catch (e: UnknownAccountException) {
+                    "That account no longer exists, so nothing was sent."
+                }
+                record(conversationId, answer, reply)
+                AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+            }
+
+            Affirmation.DENY -> {
+                pending.clear(conversationId)
+                val reply = "Okay, I've cancelled that transfer. Nothing was sent."
+                record(conversationId, answer, reply)
+                AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+            }
+
+            Affirmation.UNCLEAR -> {
+                val reply = "Sorry, I didn't catch that. Reply \"yes\" to ${staged.summary}, or \"no\" to cancel."
+                record(conversationId, answer, reply)
+                AgentChatResult(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = staged.summary)
+            }
+        }
+    }
+
+    /**
+     * Builds a per-request tool-enabled [AIAgent] for [model] and runs one turn, returning the
+     * assistant's final text.
+     *
+     * This is the densest cluster of Koog concepts in the app; each call site is annotated below.
+     */
+    private suspend fun runAgent(accountId: Long, conversationId: UUID, model: LLModel, input: String): String {
+        // 1. Our ToolSet. Built fresh per request so the acting accountId/conversationId are
+        //    captured as fields — never LLM-supplied arguments (that would be an injection risk).
+        val tools = MoneyTransferTools(accountId, conversationId, contactService, pending)
+
+        // 2. Koog ToolRegistry: `tools(instance)` reflects the @Tool methods into Tool objects
+        //    (via ToolSet.asTools()) and registers them for the agent. https://docs.koog.ai/tools-overview/
+        val registry = ToolRegistry { tools(tools) }
+
+        // 3. Koog AIAgent: a runnable agent over a PromptExecutor + model. We pass the aggregate
+        //    multiLLMPromptExecutor (so this model's provider is routed to) and the tool registry.
+        //    With no explicit strategy it uses singleRunStrategy() — the loop that repeatedly calls
+        //    the LLM, executes any tools it requests, feeds the results back, and stops when the LLM
+        //    returns plain text. https://docs.koog.ai/single-run-agents/
+        val agent = AIAgent(
+            promptExecutor = multiLLMPromptExecutor,
+            llmModel = model,
+            toolRegistry = registry,
+            systemPrompt = systemPrompt(accountId),
+        ) {
+            // 4. Koog event handlers (FR-09): observe every LLM and tool call as the run unfolds.
+            //    Here we just log; the same hooks feed tracing/metrics in step 6. https://docs.koog.ai/agent-events/
+            handleEvents {
+                onLLMCallStarting { e -> logger.debug("LLM call starting on {} with {} tools", e.model.id, e.tools.size) }
+                onLLMCallCompleted { e -> logger.debug("LLM call completed: {}", e.response?.textContent()?.take(200)) }
+                onToolCallStarting { e -> logger.info("tool → {} args={}", e.toolName, e.toolArgs) }
+                onToolCallCompleted { e -> logger.info("tool ← {} result={}", e.toolName, e.toolResult) }
+            }
+        }
+
+        // 5. Run the turn. singleRunStrategy drives LLM↔tool iterations internally; `run` suspends
+        //    until the agent produces its final text answer, which we return to the caller.
+        return agent.run(input)
+    }
+
+    /** Tags a completed run by inspecting what (if anything) it left pending. */
+    private fun tag(reply: String, conversationId: UUID): AgentChatResult =
+        when (val p = pending.get(conversationId)) {
+            is PendingInteraction.Clarification ->
+                AgentChatResult(reply, conversationId, InteractionType.CLARIFICATION, candidates = p.candidates)
+            is PendingInteraction.Confirmation ->
+                AgentChatResult(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = p.staged.summary)
+            null -> AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+        }
+
+    private fun record(conversationId: UUID, userMessage: String, reply: String) =
+        conversations.append(conversationId, Turn(Role.USER, userMessage), Turn(Role.ASSISTANT, reply))
+
+    /** Renders prior turns + the new message into one input string (no tool state in here). */
+    internal fun renderConversation(history: List<Turn>, message: String): String {
+        if (history.isEmpty()) return message
+        val transcript = history.joinToString("\n") { turn ->
+            val who = if (turn.role == Role.USER) "User" else "Assistant"
+            "$who: ${turn.content}"
+        }
+        return "Conversation so far:\n$transcript\n\nUser: $message"
+    }
+
+    private fun systemPrompt(accountId: Long): String =
+        "You are a money-transfer assistant for account $accountId. Use the tools to look up " +
+            "contacts and prepare transfers. When a recipient is ambiguous, ask the user to choose; " +
+            "never guess. Never claim a transfer is done — sendMoney only stages it for confirmation."
 
     private fun resolve(definitions: LLModelDefinitions, modelId: String): LLModel =
         definitions.modelsById()[modelId]
-            ?: error(
-                "Unknown Koog model id '$modelId'. Known ids: ${definitions.modelsById().keys.sorted()}",
-            )
-
-    private companion object {
-        // Kept minimal for step 2 (no tools yet); step 3 expands this as tools/HITL are added.
-        private const val SYSTEM_PROMPT =
-            "You are a helpful money-transfer assistant. Answer the user's questions concisely."
-    }
+            ?: error("Unknown Koog model id '$modelId'. Known ids: ${definitions.modelsById().keys.sorted()}")
 }

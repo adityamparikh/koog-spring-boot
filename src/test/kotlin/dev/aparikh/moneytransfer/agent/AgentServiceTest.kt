@@ -1,118 +1,120 @@
 package dev.aparikh.moneytransfer.agent
 
-import ai.koog.agents.core.tools.ToolDescriptor
 import ai.koog.agents.testing.tools.getMockExecutor
-import ai.koog.prompt.Prompt
-import ai.koog.prompt.dsl.ModerationResult
-import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
-import ai.koog.prompt.executor.model.PromptExecutor
-import ai.koog.prompt.llm.LLMProvider
-import ai.koog.prompt.llm.LLModel
-import ai.koog.prompt.message.Message
-import ai.koog.prompt.message.ResponseMetaInfo
-import ai.koog.prompt.streaming.StreamFrame
-import dev.aparikh.moneytransfer.common.AgentUnavailableException
-import kotlinx.coroutines.flow.Flow
+import dev.aparikh.moneytransfer.common.InsufficientFundsException
+import dev.aparikh.moneytransfer.common.NoPendingInteractionException
+import dev.aparikh.moneytransfer.contact.ContactService
+import dev.aparikh.moneytransfer.transfer.TransferService
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import java.math.BigDecimal
+import java.util.UUID
 
 /**
- * Unit tests for [AgentService].
- *
- * The happy path uses Koog's `agents-test` mock executor (no real LLM). The fallback test
- * needs per-provider behavior — the mock executor matches on prompt text and ignores the
- * model, so it cannot selectively fail one provider — so it uses a small routing fake
- * executor that fails Anthropic-model calls and answers OpenAI-model calls, proving the
- * hand-rolled cross-provider failover (AC-28).
+ * Tests the deterministic, app-side parts of [AgentService] — the confirm-gate that guarantees
+ * "no money moves without an affirmation" (AC-13) and the reply routing. The LLM-driven tool
+ * loop is covered by [MoneyTransferToolsTest] (tool behaviour) and the mock-executor flow test;
+ * here the agent is never run (reply resolves confirmations app-side).
  */
 class AgentServiceTest {
 
+    private val executor = getMockExecutor { mockLLMAnswer("hi").asDefaultResponse }
     private val conversations = ConversationStore()
-    private val properties = AgentModelProperties() // defaults: claude-sonnet-4-6 / claude-opus-4-7 / gpt-5.4
+    private val pending = PendingInteractionStore()
+    private val contactService = mockk<ContactService>()
+    private val transferService = mockk<TransferService>(relaxed = true)
+    private val interpreter = mockk<AffirmationInterpreter>()
+    private val service = AgentService(
+        executor, conversations, pending, contactService, transferService, interpreter, AgentModelProperties(),
+    )
 
-    /**
-     * A [PromptExecutor] that routes by `model.provider`: Anthropic calls throw (simulating a
-     * downed primary), OpenAI calls succeed. A hand-written subclass rather than a mock —
-     * `LLMClient`/`PromptExecutor` are multiplatform `expect` types whose suspend members
-     * can't be proxied by mockk.
-     */
-    private class ProviderRoutingFakeExecutor : PromptExecutor() {
-        override suspend fun execute(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): Message.Assistant =
-            if (model.provider == LLMProvider.Anthropic) {
-                throw IllegalStateException("Anthropic down")
-            } else {
-                Message.Assistant("Hello from OpenAI!", ResponseMetaInfo.Empty)
-            }
+    private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")
 
-        override fun executeStreaming(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): Flow<StreamFrame> =
-            throw UnsupportedOperationException("not used")
+    private fun stageConfirmation() = pending.put(
+        conversationId,
+        PendingInteraction.Confirmation(
+            StagedTransfer(senderAccountId = 1, recipientAccountId = 2, recipientDisplay = "Alice Smith", amount = BigDecimal("50.00"), purpose = "lunch"),
+        ),
+    )
 
-        override suspend fun moderate(prompt: Prompt, model: LLModel): ModerationResult =
-            throw UnsupportedOperationException("not used")
+    @Test
+    fun `affirming a confirmation executes the staged transfer once and clears it`() {
+        stageConfirmation()
+        coEvery { interpreter.interpret("yeah go for it") } returns Affirmation.AFFIRM
 
-        override fun close() {}
+        val result = runBlocking { service.reply(accountId = 1, conversationId = conversationId, answer = "yeah go for it") }
+
+        assertEquals(InteractionType.ANSWER, result.type)
+        verify(exactly = 1) { transferService.transfer(1, 2, BigDecimal("50.00"), "lunch") }
+        assertNull(pending.get(conversationId))
     }
 
     @Test
-    fun `chat returns the LLM reply and a stable conversation id`() {
-        val executor = getMockExecutor { mockLLMAnswer("Hello from Anthropic!").asDefaultResponse }
-        val service = AgentService(executor, conversations, properties)
+    fun `denying a confirmation transfers nothing and clears it`() {
+        stageConfirmation()
+        coEvery { interpreter.interpret("no, cancel that") } returns Affirmation.DENY
 
-        val result = runBlocking { service.chat(accountId = 1, message = "Hi", conversationId = null) }
+        val result = runBlocking { service.reply(1, conversationId, "no, cancel that") }
 
-        assertEquals("Hello from Anthropic!", result.reply)
-        assertNotNull(result.conversationId)
-        // The turn is recorded so the next call can replay it as context.
-        assertEquals(2, conversations.historyOf(result.conversationId).size)
+        assertEquals(InteractionType.ANSWER, result.type)
+        verify(exactly = 0) { transferService.transfer(any(), any(), any(), any()) }
+        assertNull(pending.get(conversationId))
     }
 
     @Test
-    fun `chat falls back to OpenAI when the Anthropic call errors`() {
-        val service = AgentService(ProviderRoutingFakeExecutor(), conversations, properties)
+    fun `an unclear confirmation reply re-prompts and transfers nothing`() {
+        stageConfirmation()
+        coEvery { interpreter.interpret(any()) } returns Affirmation.UNCLEAR
 
-        val result = runBlocking { service.chat(accountId = 1, message = "Hi", conversationId = null) }
+        val result = runBlocking { service.reply(1, conversationId, "what were the details?") }
 
-        assertEquals("Hello from OpenAI!", result.reply)
+        assertEquals(InteractionType.CONFIRMATION, result.type)
+        assertNotNull(result.transferSummary)
+        verify(exactly = 0) { transferService.transfer(any(), any(), any(), any()) }
+        assertNotNull(pending.get(conversationId)) // still pending
     }
 
     @Test
-    fun `chat throws AgentUnavailable when no provider can serve the request`() {
-        // An executor with no registered clients: every model in the chain throws "no client".
-        val service = AgentService(MultiLLMPromptExecutor(emptyMap()), conversations, properties)
+    fun `affirming an over-balance transfer reports the failure and moves no money`() {
+        stageConfirmation()
+        coEvery { interpreter.interpret("yes") } returns Affirmation.AFFIRM
+        every { transferService.transfer(1, 2, BigDecimal("50.00"), "lunch") } throws InsufficientFundsException(1, BigDecimal("50.00"))
 
-        assertThrows<AgentUnavailableException> {
-            runBlocking { service.chat(accountId = 1, message = "Hi", conversationId = null) }
+        val result = runBlocking { service.reply(1, conversationId, "yes") }
+
+        assertEquals(InteractionType.ANSWER, result.type)
+        assertTrue(result.reply.contains("exceed your balance"))
+        assertNull(pending.get(conversationId))
+    }
+
+    @Test
+    fun `replying with nothing pending is rejected`() {
+        assertThrows<NoPendingInteractionException> {
+            runBlocking { service.reply(1, UUID.randomUUID(), "yes") }
         }
     }
 
     @Test
-    fun `buildPrompt puts the new message last for a fresh conversation`() {
-        val service = AgentService(getMockExecutor { mockLLMAnswer("x").asDefaultResponse }, conversations, properties)
-
-        val prompt = service.buildPrompt(1, emptyList(), "Send 50 to Alice")
-
-        // system message + the new user message, in order.
-        assertEquals("Send 50 to Alice", prompt.messages.last().textContent())
-        assertEquals(2, prompt.messages.size)
+    fun `renderConversation returns the bare message for a new conversation`() {
+        assertEquals("Send 50 to Alice", service.renderConversation(emptyList(), "Send 50 to Alice"))
     }
 
     @Test
-    fun `buildPrompt replays prior turns as messages`() {
-        val service = AgentService(getMockExecutor { mockLLMAnswer("x").asDefaultResponse }, conversations, properties)
-        val history = listOf(
-            Turn(Role.USER, "Who are my contacts?"),
-            Turn(Role.ASSISTANT, "Alice, Bob, and two Daniels."),
-        )
+    fun `renderConversation replays prior turns`() {
+        val history = listOf(Turn(Role.USER, "who are my contacts?"), Turn(Role.ASSISTANT, "Alice, Bob, two Daniels."))
+        val input = service.renderConversation(history, "send 50 to Craig")
 
-        val prompt = service.buildPrompt(1, history, "Send 50 to Alice")
-        val texts = prompt.messages.map { it.textContent() }
-
-        assertTrue(texts.any { it.contains("Who are my contacts?") })
-        assertTrue(texts.any { it.contains("Alice, Bob, and two Daniels.") })
-        assertEquals("Send 50 to Alice", prompt.messages.last().textContent())
+        assertTrue(input.contains("who are my contacts?"))
+        assertTrue(input.contains("Alice, Bob, two Daniels."))
+        assertTrue(input.trimEnd().endsWith("send 50 to Craig"))
     }
 }

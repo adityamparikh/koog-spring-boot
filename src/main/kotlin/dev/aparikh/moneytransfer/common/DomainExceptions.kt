@@ -6,6 +6,14 @@ import java.math.BigDecimal
 class UnknownAccountException(val accountId: Long) :
     RuntimeException("Account $accountId does not exist")
 
+/** Thrown when a contact id is not in the acting user's address book. Maps to HTTP 404. */
+class UnknownContactException(val contactId: Long) :
+    RuntimeException("Contact $contactId does not exist for this user")
+
+/** Thrown when replying to a conversation that has no pending clarification/confirmation. Maps to HTTP 409. */
+class NoPendingInteractionException(val conversationId: java.util.UUID) :
+    RuntimeException("Conversation $conversationId has nothing awaiting a reply")
+
 /** Thrown when a sender cannot cover the requested transfer amount. Maps to HTTP 422. */
 class InsufficientFundsException(val accountId: Long, val requested: BigDecimal) :
     RuntimeException("Account $accountId has insufficient funds for $requested EUR")

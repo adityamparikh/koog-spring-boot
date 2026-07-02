@@ -1,13 +1,14 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step2-koog-spring-boot`)
-is step 2: the Koog Spring Boot starter integration — a conversational `/agent/chat` endpoint
-over a multi-provider LLM setup, on top of step 1's persisted domain.**
+branch that adds one capability (see `feature.md`). **This branch (`step3-tools`) is step 3:
+the agent gains tools that act on the money-transfer domain — list contacts, disambiguate a
+recipient, and send money with a human-in-the-loop confirmation.**
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
-> covers **step 1** (money-transfer REST) and **step 2** (AI agent chat).
+> covers **step 1** (money-transfer REST), **step 2** (AI agent chat), and **step 3** (agent
+> tools & human-in-the-loop).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -167,8 +168,58 @@ curl -s -X POST http://localhost:8080/api/v1/agent/chat \
 # → the reply reflects the earlier turn (context is replayed per conversationId)
 ```
 
+## Step 3 — Agent tools & human-in-the-loop
+Step 3 gives the agent **tools** (Koog `ToolSet`) that call the step-1 services, so it can
+actually list contacts, disambiguate a recipient, and prepare a transfer — with a
+human-in-the-loop (HITL) confirmation before any money moves.
+
+- **Tools** (`getContacts`, `chooseRecipient`, `sendMoney`) delegate to `ContactService` /
+  `TransferService`. The acting account is bound from `X-User-Id` per request, never supplied
+  by the LLM.
+- **HITL is plain multi-turn conversation.** A turn that asks "which Daniel?" or "confirm?"
+  *is* the pause; you answer on the next call. No checkpoint machinery here (that arrives in
+  step 5, for surviving restarts).
+- **Money never moves without a "yes".** `sendMoney` only **stages** a transfer; it executes
+  **app-side** only after you affirm via `/reply`. Affirmation is natural-language ("yes",
+  "yeah go ahead", "approved") matched by a deterministic phrase interpreter (no LLM on the
+  money path); anything ambiguous re-prompts and sends nothing.
+
+Responses are tagged `type`: `ANSWER` | `CLARIFICATION` (pick a `candidates[]` contact) |
+`CONFIRMATION` (approve the `transferSummary`). Answer either via `POST /agent/{id}/reply`.
+
+> **See [docs/agent-flow.md](docs/agent-flow.md)** for Mermaid diagrams of the business logic
+> and the internal agentic flow, a full HITL sequence diagram, and a longer interaction guide.
+
+**8. Ask the agent to send money to an ambiguous recipient → `CLARIFICATION`**
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "send 50 euros to Daniel for dinner"}'
+# → {"type":"CLARIFICATION","reply":"Which Daniel …","conversationId":"<id>",
+#     "candidates":[{"contactId":14,"displayName":"Daniel Anderson"},
+#                   {"contactId":15,"displayName":"Daniel Craig"}]}
+```
+
+**9. Reply with the chosen contact → `CONFIRMATION`**
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"answer": "Daniel Craig"}'
+# → {"type":"CONFIRMATION","reply":"Please confirm …","conversationId":"<id>",
+#     "transferSummary":"Send €50 to Daniel Craig for \"dinner\""}
+```
+
+**10. Confirm in natural language → the transfer executes**
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"answer": "yeah go ahead"}'
+# → {"type":"ANSWER","reply":"Done — sent €50 to Daniel Craig.","conversationId":"<id>"}
+# (reply "no"/"cancel" instead → nothing is sent)
+```
+
 ## What's next
-Later branches add: agent tools + human-in-the-loop (step 3), a custom balance-cap strategy
-(step 4), Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback (step 7),
-history compression (step 8), fuller tests (step 9), and a Spring AI refactor (step 10). See
-`feature.md` for the full roadmap.
+Later branches add: a custom balance-cap strategy (step 4 — "send up to your available
+balance"), Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback
+(step 7), history compression (step 8), fuller tests (step 9), and a Spring AI refactor
+(step 10). See `feature.md` for the full roadmap.
