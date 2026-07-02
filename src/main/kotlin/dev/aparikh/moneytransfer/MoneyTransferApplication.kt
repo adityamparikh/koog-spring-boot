@@ -4,8 +4,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 
 @SpringBootApplication
-class KoogSpringBootApplication
+class MoneyTransferApplication
 
 fun main(args: Array<String>) {
-    runApplication<KoogSpringBootApplication>(*args)
+    runApplication<MoneyTransferApplication>(*args)
 }
