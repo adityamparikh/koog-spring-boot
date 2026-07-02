@@ -31,9 +31,14 @@ class AgentController(
     private val agentService: AgentService,
 ) {
 
-    /** Sends one message from the acting user (`X-User-Id`) and returns the agent's reply. */
+    /**
+     * Sends one message from the acting user (`X-User-Id`) and returns the agent's reply.
+     *
+     * `suspend`: Koog's agent API is suspending, and Spring MVC invokes suspending handler
+     * methods natively (bridging to Reactor under the hood), so there is no `runBlocking`.
+     */
     @PostMapping("/chat")
-    fun chat(
+    suspend fun chat(
         @RequestHeader("X-User-Id") userId: Long,
         @RequestBody request: ChatRequest,
     ): ChatResponse {
