@@ -11,7 +11,7 @@ Key components:
 |-----------|------|
 | `AgentController` | REST surface: `POST /agent/chat`, `POST /agent/{conversationId}/reply` |
 | `AgentService` | Orchestrates a turn: builds the agent, runs it, tags the outcome, resolves replies |
-| `MoneyTransferTools` | Koog `ToolSet`: `getContacts`, `chooseRecipient`, `sendMoney` (stages only) |
+| `MoneyTransferTools` | Koog `ToolSet`: `getContacts`, `chooseRecipient`, `prepareTransfer` (stages only) |
 | `ConversationStore` | In-memory transcript per `conversationId` (the HITL "memory") |
 | `PendingInteractionStore` | What a conversation is awaiting: a `Clarification` or a `Confirmation` |
 | `AffirmationInterpreter` | Deterministic natural-language yes/no (no LLM on the money path) |
@@ -31,7 +31,7 @@ flowchart TD
     LOOKUP --> MATCH{How many contacts match}
     MATCH -->|zero| NOPE[Reply: no match, list your contacts]
     MATCH -->|many| CLARIFY[Response type CLARIFICATION with candidates]
-    MATCH -->|exactly one| STAGE[sendMoney stages a transfer]
+    MATCH -->|exactly one| STAGE[prepareTransfer stages a transfer]
 
     CLARIFY --> PICK[POST /reply with chosen contact]
     PICK --> CHAT
@@ -45,7 +45,7 @@ flowchart TD
     EXEC --> DONE[Balances updated in Postgres, response type ANSWER]
 ```
 
-**The money-safety guarantee:** `sendMoney` never moves money — it only *stages* a
+**The money-safety guarantee:** `prepareTransfer` never moves money — it only *stages* a
 `StagedTransfer`. The actual `TransferService.transfer` runs **app-side** in the `affirm` branch
 only. The LLM cannot reach the ledger.
 
@@ -78,7 +78,7 @@ flowchart TD
 
 **Multi-LLM fallback:** the run is wrapped in an ordered `llms` loop (Anthropic first, then
 OpenAI `gpt-5.4`). If the whole run throws on the first model, it retries on the next; because
-`sendMoney` only stages, retrying a turn never double-sends money.
+`prepareTransfer` only stages, retrying a turn never double-sends money.
 
 ## HITL sequence — the two Daniels, end to end
 
@@ -105,7 +105,7 @@ sequenceDiagram
     API->>S: reply with answer Daniel Craig
     S->>S: pending is Clarification so re-run chat
     S->>L: run with transcript and tools
-    L->>S: tool sendMoney contactId 15 amount 50
+    L->>S: tool prepareTransfer contactId 15 amount 50
     S->>P: put Confirmation with staged transfer
     L-->>S: text - please confirm
     S-->>API: CONFIRMATION and summary

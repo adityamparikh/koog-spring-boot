@@ -173,13 +173,13 @@ Step 3 gives the agent **tools** (Koog `ToolSet`) that call the step-1 services,
 actually list contacts, disambiguate a recipient, and prepare a transfer — with a
 human-in-the-loop (HITL) confirmation before any money moves.
 
-- **Tools** (`getContacts`, `chooseRecipient`, `sendMoney`) delegate to `ContactService` /
+- **Tools** (`getContacts`, `chooseRecipient`, `prepareTransfer`) delegate to `ContactService` /
   `TransferService`. The acting account is bound from `X-User-Id` per request, never supplied
   by the LLM.
 - **HITL is plain multi-turn conversation.** A turn that asks "which Daniel?" or "confirm?"
   *is* the pause; you answer on the next call. No checkpoint machinery here (that arrives in
   step 5, for surviving restarts).
-- **Money never moves without a "yes".** `sendMoney` only **stages** a transfer; it executes
+- **Money never moves without a "yes".** `prepareTransfer` only **stages** a transfer; it executes
   **app-side** only after you affirm via `/reply`. Affirmation is natural-language ("yes",
   "yeah go ahead", "approved") matched by a deterministic phrase interpreter (no LLM on the
   money path); anything ambiguous re-prompts and sends nothing.

@@ -25,8 +25,17 @@ import java.util.UUID
 /** The kind of turn the API is reporting back to the caller. */
 enum class InteractionType { ANSWER, CLARIFICATION, CONFIRMATION }
 
-/** The agent's tagged reply: plain [ANSWER], a recipient [CLARIFICATION], or a transfer [CONFIRMATION]. */
-data class AgentChatResult(
+/**
+ * The agent's tagged result — produced by [AgentService] and returned as-is by the controller
+ * (it is the public JSON contract). [type] tells the client what to do next:
+ * - `ANSWER` — a plain reply, nothing pending.
+ * - `CLARIFICATION` — pick one of [candidates], then `POST /reply`.
+ * - `CONFIRMATION` — approve/decline [transferSummary] via `POST /reply` ("yes"/"no").
+ *
+ * (A separate web DTO was collapsed into this — reintroduce one only if the API needs to
+ * diverge from what the service returns.)
+ */
+data class ChatResponse(
     val reply: String,
     val conversationId: UUID,
     val type: InteractionType,
@@ -43,8 +52,8 @@ data class AgentChatResult(
  * LLM↔tool loop until the model produces a text answer. https://docs.koog.ai/tools-overview/
  *
  * HITL is plain multi-turn conversation (the transcript in [ConversationStore] is the state) plus
- * a deterministic confirm-gate: `sendMoney` only *stages* a transfer, and `reply(...)` executes
- * it **app-side** once the user affirms — so no money moves without an explicit "yes".
+ * a deterministic confirm-gate: `prepareTransfer` only *stages* a transfer, and `reply(...)`
+ * executes it **app-side** once the user affirms — so no money moves without an explicit "yes".
  */
 @Service
 class AgentService(
@@ -70,7 +79,7 @@ class AgentService(
      * clarification/confirmation for this conversation is discarded first (edge rule). Returns a
      * response tagged by what the turn produced.
      */
-    suspend fun chat(accountId: Long, message: String, conversationId: UUID?): AgentChatResult {
+    suspend fun chat(accountId: Long, message: String, conversationId: UUID?): ChatResponse {
         val id = conversationId ?: UUID.randomUUID()
         pending.clear(id) // new intent — a forgotten "yes" can't fire a stale transfer later
         val input = renderConversation(conversations.historyOf(id), message)
@@ -104,7 +113,7 @@ class AgentService(
      *
      * @throws NoPendingInteractionException if nothing is awaiting a reply.
      */
-    suspend fun reply(accountId: Long, conversationId: UUID, answer: String): AgentChatResult =
+    suspend fun reply(accountId: Long, conversationId: UUID, answer: String): ChatResponse =
         when (val interaction = pending.get(conversationId)) {
             is PendingInteraction.Clarification -> chat(accountId, answer, conversationId)
             is PendingInteraction.Confirmation -> resolveConfirmation(conversationId, interaction, answer)
@@ -115,7 +124,7 @@ class AgentService(
         conversationId: UUID,
         confirmation: PendingInteraction.Confirmation,
         answer: String,
-    ): AgentChatResult {
+    ): ChatResponse {
         val staged = confirmation.staged
         return when (affirmationInterpreter.interpret(answer)) {
             Affirmation.AFFIRM -> {
@@ -130,20 +139,20 @@ class AgentService(
                     "That account no longer exists, so nothing was sent."
                 }
                 record(conversationId, answer, reply)
-                AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+                ChatResponse(reply, conversationId, InteractionType.ANSWER)
             }
 
             Affirmation.DENY -> {
                 pending.clear(conversationId)
                 val reply = "Okay, I've cancelled that transfer. Nothing was sent."
                 record(conversationId, answer, reply)
-                AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+                ChatResponse(reply, conversationId, InteractionType.ANSWER)
             }
 
             Affirmation.UNCLEAR -> {
                 val reply = "Sorry, I didn't catch that. Reply \"yes\" to ${staged.summary}, or \"no\" to cancel."
                 record(conversationId, answer, reply)
-                AgentChatResult(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = staged.summary)
+                ChatResponse(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = staged.summary)
             }
         }
     }
@@ -190,13 +199,13 @@ class AgentService(
     }
 
     /** Tags a completed run by inspecting what (if anything) it left pending. */
-    private fun tag(reply: String, conversationId: UUID): AgentChatResult =
+    private fun tag(reply: String, conversationId: UUID): ChatResponse =
         when (val p = pending.get(conversationId)) {
             is PendingInteraction.Clarification ->
-                AgentChatResult(reply, conversationId, InteractionType.CLARIFICATION, candidates = p.candidates)
+                ChatResponse(reply, conversationId, InteractionType.CLARIFICATION, candidates = p.candidates)
             is PendingInteraction.Confirmation ->
-                AgentChatResult(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = p.staged.summary)
-            null -> AgentChatResult(reply, conversationId, InteractionType.ANSWER)
+                ChatResponse(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = p.staged.summary)
+            null -> ChatResponse(reply, conversationId, InteractionType.ANSWER)
         }
 
     private fun record(conversationId: UUID, userMessage: String, reply: String) =
@@ -215,7 +224,7 @@ class AgentService(
     private fun systemPrompt(accountId: Long): String =
         "You are a money-transfer assistant for account $accountId. Use the tools to look up " +
             "contacts and prepare transfers. When a recipient is ambiguous, ask the user to choose; " +
-            "never guess. Never claim a transfer is done — sendMoney only stages it for confirmation."
+            "never guess."
 
     private fun resolve(definitions: LLModelDefinitions, modelId: String): LLModel =
         definitions.modelsById()[modelId]

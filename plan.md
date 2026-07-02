@@ -33,7 +33,7 @@ run** replaying the transcript (the step-2 `ConversationStore` already carries i
   load-bearing until step 5, so installing it now would be dead weight. The seam that step 5
   makes durable is `conversationId`-keyed conversation state, which already exists.
 - **The one thing that needs real care is not pausing — it's not letting the LLM move money
-  on a whim.** `sendMoney` must **stage** a transfer and never execute until the user affirms.
+  on a whim.** `prepareTransfer` must **stage** a transfer and never execute until the user affirms.
   That is a confirm-gate (`conversationId → staged transfer`); the actual
   `TransferService.transfer(...)` runs **app-side** when the user affirms, never by the LLM
   inside a tool call.
@@ -44,7 +44,7 @@ state:
 - **Clarification reply** (e.g. "Craig") → **re-run the agent** with the selection appended to
   the transcript. The original intent (amount, purpose from "send €50 to Daniel") lives **only
   in the conversation**, not in any tool state — `chooseRecipient(name)` never saw the amount —
-  so the LLM must re-read the history to call `sendMoney(chosenContactId, 50)`. This typically
+  so the LLM must re-read the history to call `prepareTransfer(chosenContactId, 50)`. This typically
   yields a `CONFIRMATION` next.
 - **Confirmation reply** (e.g. "yeah, go ahead") → **app-side, no full agent run**. Interpret
   the answer as affirm / deny / unclear (see below); **affirm** → execute the staged transfer
@@ -74,7 +74,7 @@ free, and zero-latency on the money path:
   per-request**, capturing `accountId` + `conversationId` in the instance (cheap; the tools
   still delegate to the singleton Spring services). The LLM only supplies business args
   (name, amount, purpose, contact id).
-- **Confirm-gated `sendMoney`:** first call **never** transfers — it resolves
+- **Confirm-gated `prepareTransfer`:** first call **never** transfers — it resolves
   `recipientContactId → contactAccountId`, records a `StagedTransfer` in `PendingInteractionStore`
   keyed by `conversationId`, and returns "confirmation required". The transfer executes only
   when the user affirms on `/reply`, fired **app-side** (deterministic — AC-13); a denial
@@ -83,9 +83,9 @@ free, and zero-latency on the money path:
   return it; zero/many → record a `Clarification(candidates)` and return "clarification
   required" (AC-12).
 - **Tool results expose ids.** `getContacts` and `chooseRecipient` return a compact line per
-  contact **including `contactId`** (and display name/phone), because `sendMoney` takes a
+  contact **including `contactId`** (and display name/phone), because `prepareTransfer` takes a
   `recipientContactId` — the LLM needs the id from an earlier tool result to chain into
-  `sendMoney`.
+  `prepareTransfer`.
 - **Edge rules:** at most **one** pending interaction per conversation (**last-write-wins**
   within a run); a fresh `POST /agent/chat` while a confirmation is pending **discards the
   stale staged transfer** (starts a new intent), so a forgotten "yes" can never fire a
@@ -100,7 +100,7 @@ free, and zero-latency on the money path:
   (`llms` list over `multiLLMPromptExecutor`); each attempt now builds an
   `AIAgent(promptExecutor, llmModel, toolRegistry = registry, systemPrompt) { handleEvents { … } }`
   with `singleRunStrategy()` (default). `ContactService` gains
-  `getContact(ownerAccountId, contactId): ResolvedContact` (ownership-checked) so `sendMoney`
+  `getContact(ownerAccountId, contactId): ResolvedContact` (ownership-checked) so `prepareTransfer`
   can resolve the recipient account before staging.
 - **Koog teaching comments (AC-26)** at every new Koog site (`ToolSet`/`@Tool`, `ToolRegistry`,
   `handleEvents`) with `docs.koog.ai` links.
@@ -126,7 +126,7 @@ free, and zero-latency on the money path:
   - `getContacts()` → `ContactService.getContacts(ctx.accountId)` → compact list text.
   - `chooseRecipient(name)` → `ContactService.findByName(ctx.accountId, name)`; 1 → the contact;
     0/many → record `Clarification`, return "needs clarification".
-  - `sendMoney(recipientContactId, amount, purpose)` → `ContactService.getContact(...)` →
+  - `prepareTransfer(recipientContactId, amount, purpose)` → `ContactService.getContact(...)` →
     record `Confirmation(StagedTransfer)`, return "needs confirmation" (does **not** transfer).
 - [ ] `agent/AffirmationInterpreter.kt` — natural-language yes/no via pure phrase-regex
       matching (no LLM): `AFFIRM | DENY | UNCLEAR`; both/neither → `UNCLEAR` → re-prompt.
@@ -165,11 +165,11 @@ Spring services + the in-memory stores are the adapters; nothing extra for step 
 ### Step 6: Tests (FR-08/09/10; AC-11..14)
 - [ ] **Tool unit tests** `MoneyTransferToolsTest` (MockK on services + a set `AgentContext`):
       `getContacts` delegates; `chooseRecipient` returns 1 vs records a clarification for
-      "Daniel" (2 candidates); `sendMoney` records a confirmation and does **not** call
+      "Daniel" (2 candidates); `prepareTransfer` records a confirmation and does **not** call
       `TransferService`.
 - [ ] **Agent flow tests** `AgentToolFlowTest` (Koog `agents-test`: `getMockExecutor` +
       `mockLLMToolCall`): end-to-end list→disambiguate→send (AC-11); ambiguous recipient →
-      `CLARIFICATION`, a reply selects the contact (AC-12); `sendMoney` transfers only after a
+      `CLARIFICATION`, a reply selects the contact (AC-12); `prepareTransfer` transfers only after a
       `/reply "yes"` (AC-13). No live LLM.
 - [ ] **Event observability** (AC-14): a test event collector asserts `onLLMCall*` and
       `onToolCall*` fired for a run that calls a tool.
@@ -188,14 +188,14 @@ Spring services + the in-memory stores are the adapters; nothing extra for step 
 |----|-------------|
 | AC-11: list contacts, disambiguate, send end-to-end via tools | `AgentToolFlowTest#endToEndTransferViaTools` |
 | AC-12: ambiguous recipient → CLARIFICATION; reply selects contact | `AgentToolFlowTest#ambiguousRecipientClarifies` + `MoneyTransferToolsTest#chooseRecipientAmbiguous` |
-| AC-13: sendMoney executes only after CONFIRMATION "yes" | `AgentToolFlowTest#sendMoneyRequiresConfirmation` + `MoneyTransferToolsTest#sendMoneyDefersTransfer` |
+| AC-13: prepareTransfer executes only after CONFIRMATION "yes" | `AgentToolFlowTest#prepareTransferRequiresConfirmation` + `MoneyTransferToolsTest#prepareTransferDefersTransfer` |
 | AC-14: LLM + tool-call events observable | `AgentToolFlowTest#eventsAreObservable` |
 | AC-25: no inline versions (no new deps) | manual review of `build.gradle.kts` |
 | AC-26: Koog call sites carry teaching comments | manual review |
 | AC-29: README step-3 usage section | manual review of `README.md` diff |
 
 ## Risks & Mitigations
-- **Guaranteeing "no money moves without affirmation" (AC-13):** → `sendMoney` only *stages*;
+- **Guaranteeing "no money moves without affirmation" (AC-13):** → `prepareTransfer` only *stages*;
   the transfer executes **app-side** when `AffirmationInterpreter` returns `AFFIRM`, never by
   the LLM inside a tool call. `UNCLEAR` re-prompts; ambiguous NL never moves money. The pending
   store is the single source of truth for what's awaiting confirmation.

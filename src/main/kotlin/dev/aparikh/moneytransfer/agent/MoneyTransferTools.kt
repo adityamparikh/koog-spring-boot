@@ -20,7 +20,7 @@ import java.math.BigDecimal
  * coroutine-safe (no `ThreadLocal` that a dispatched tool call could lose).
  *
  * The HITL-sensitive tools never act irreversibly: `chooseRecipient` may record a
- * [PendingInteraction.Clarification], and `sendMoney` only **stages** a
+ * [PendingInteraction.Clarification], and `prepareTransfer` only **stages** a
  * [PendingInteraction.Confirmation] — the transfer itself executes app-side after the user
  * confirms (see `AgentService.reply`).
  */
@@ -39,11 +39,11 @@ class MoneyTransferTools(
     //  • The String return value is fed back to the model as the tool result.
     // https://docs.koog.ai/tools-overview/
 
-    /** Lists the user's contacts, each with the `contactId` needed by [sendMoney]. */
+    /** Lists the user's contacts, each with the `contactId` needed by [prepareTransfer]. */
     @Tool
     @LLMDescription(
         "List the current user's saved contacts. Returns one line per contact as " +
-            "'contactId | displayName | phone'. Use the contactId with sendMoney.",
+            "'contactId | displayName | phone'. Use the contactId with prepareTransfer.",
     )
     fun getContacts(): String {
         val contacts = contactService.getContacts(accountId)
@@ -69,7 +69,7 @@ class MoneyTransferTools(
             1 -> {
                 pending.clear(conversationId)
                 val c = matches.single()
-                "Matched contact ${c.contactId}: ${c.displayName}. Use contactId ${c.contactId} with sendMoney."
+                "Matched contact ${c.contactId}: ${c.displayName}. Use contactId ${c.contactId} with prepareTransfer."
             }
 
             0 -> {
@@ -96,7 +96,7 @@ class MoneyTransferTools(
             "stages the transfer and asks the user to confirm. Only call this once you have a " +
             "concrete recipient contactId (from getContacts or chooseRecipient).",
     )
-    fun sendMoney(
+    fun prepareTransfer(
         @LLMDescription("The recipient's contactId") recipientContactId: Long,
         @LLMDescription("The amount to send in EUR, e.g. 50 or 50.00") amount: String,
         @LLMDescription("Optional note describing the transfer's purpose") purpose: String? = null,

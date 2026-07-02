@@ -13,7 +13,7 @@ data class ContactCandidate(
 )
 
 /**
- * A transfer that has been prepared by the `sendMoney` tool but **not executed** — it waits for
+ * A transfer that has been prepared by the `prepareTransfer` tool but **not executed** — it waits for
  * an explicit user confirmation. Keeping it here (not in the ledger) is what guarantees no money
  * moves without a "yes".
  */

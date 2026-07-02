@@ -13,7 +13,7 @@ import java.util.UUID
 /**
  * Direct unit tests for the [MoneyTransferTools] `ToolSet` — the tool methods are plain Kotlin
  * functions, so we exercise them without any LLM/agent. Covers delegation, ambiguous-recipient
- * clarification (AC-12), and the confirm-gate: `sendMoney` never transfers (AC-13).
+ * clarification (AC-12), and the confirm-gate: `prepareTransfer` never transfers (AC-13).
  */
 class MoneyTransferToolsTest {
 
@@ -64,10 +64,10 @@ class MoneyTransferToolsTest {
     }
 
     @Test
-    fun `sendMoney stages a confirmation and does NOT transfer`() {
+    fun `prepareTransfer stages a confirmation and does NOT transfer`() {
         every { contactService.getContact(1, 10) } returns contact(10, 2, "Alice Smith")
 
-        val out = tools.sendMoney(recipientContactId = 10, amount = "50.00", purpose = "lunch")
+        val out = tools.prepareTransfer(recipientContactId = 10, amount = "50.00", purpose = "lunch")
 
         assertTrue(out.contains("confirm", ignoreCase = true))
         val confirmation = pending.get(conversationId)
@@ -79,8 +79,8 @@ class MoneyTransferToolsTest {
     }
 
     @Test
-    fun `sendMoney rejects a non-numeric amount without staging`() {
-        val out = tools.sendMoney(recipientContactId = 10, amount = "a lot", purpose = null)
+    fun `prepareTransfer rejects a non-numeric amount without staging`() {
+        val out = tools.prepareTransfer(recipientContactId = 10, amount = "a lot", purpose = null)
 
         assertTrue(out.contains("not a valid amount"))
         assertNull(pending.get(conversationId))

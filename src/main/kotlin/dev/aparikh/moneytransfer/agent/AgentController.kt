@@ -20,31 +20,9 @@ data class ReplyRequest(
 )
 
 /**
- * The agent's tagged response. [type] tells the client what to do next:
- * - `ANSWER` — a plain reply, nothing pending.
- * - `CLARIFICATION` — pick one of [candidates], then `POST /reply`.
- * - `CONFIRMATION` — approve/decline [transferSummary] via `POST /reply` ("yes"/"no").
- */
-data class ChatResponse(
-    val type: InteractionType,
-    val reply: String,
-    val conversationId: UUID,
-    val candidates: List<ContactCandidate> = emptyList(),
-    val transferSummary: String? = null,
-)
-
-private fun AgentChatResult.toResponse() = ChatResponse(
-    type = type,
-    reply = reply,
-    conversationId = conversationId,
-    candidates = candidates,
-    transferSummary = transferSummary,
-)
-
-/**
  * REST surface for the tool-enabled agent (step 3). `chat` starts/continues a conversation;
  * `reply` answers a pending clarification or confirmation. Both take the acting user via
- * `X-User-Id` and return a tagged [ChatResponse].
+ * `X-User-Id` and return the service's tagged [ChatResponse] as-is.
  */
 @RestController
 @RequestMapping("/api/v1/agent")
@@ -58,7 +36,7 @@ class AgentController(
         @RequestHeader("X-User-Id") userId: Long,
         @RequestBody request: ChatRequest,
     ): ChatResponse =
-        agentService.chat(userId, request.message, request.conversationId).toResponse()
+        agentService.chat(userId, request.message, request.conversationId)
 
     /** Answers a pending clarification (pick a contact) or confirmation ("yes"/"no"). */
     @PostMapping("/{conversationId}/reply")
@@ -67,5 +45,5 @@ class AgentController(
         @PathVariable conversationId: UUID,
         @RequestBody request: ReplyRequest,
     ): ChatResponse =
-        agentService.reply(userId, conversationId, request.answer).toResponse()
+        agentService.reply(userId, conversationId, request.answer)
 }

@@ -49,7 +49,7 @@ class AgentControllerTest {
 
     @Test
     fun `chat returns a CLARIFICATION with candidates`() {
-        coEvery { agentService.chat(1L, "send money to Daniel", null) } returns AgentChatResult(
+        coEvery { agentService.chat(1L, "send money to Daniel", null) } returns ChatResponse(
             reply = "Which Daniel?",
             conversationId = conversationId,
             type = InteractionType.CLARIFICATION,
@@ -72,7 +72,7 @@ class AgentControllerTest {
 
     @Test
     fun `reply returns a CONFIRMATION summary`() {
-        coEvery { agentService.reply(1L, conversationId, "Craig") } returns AgentChatResult(
+        coEvery { agentService.reply(1L, conversationId, "Craig") } returns ChatResponse(
             reply = "Please confirm.",
             conversationId = conversationId,
             type = InteractionType.CONFIRMATION,
