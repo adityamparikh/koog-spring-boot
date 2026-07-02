@@ -27,7 +27,7 @@ data class StagedTransfer(
     /** Human-readable one-liner used in the CONFIRMATION prompt. */
     val summary: String
         get() = buildString {
-            append("Send €")
+            append("Send $")
             append(amount.toPlainString())
             append(" to ")
             append(recipientDisplay)

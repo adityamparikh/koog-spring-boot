@@ -14,6 +14,7 @@ import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.common.UnknownAccountException
 import dev.aparikh.moneytransfer.common.UnknownContactException
+import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferService
 import kotlinx.coroutines.CancellationException
@@ -61,6 +62,7 @@ class AgentService(
     private val conversations: ConversationStore,
     private val pending: PendingInteractionStore,
     private val contactService: ContactService,
+    private val accountService: AccountService,
     private val transferService: TransferService,
     private val affirmationInterpreter: AffirmationInterpreter,
     properties: AgentModelProperties,
@@ -131,7 +133,7 @@ class AgentService(
                 pending.clear(conversationId)
                 val reply = try {
                     transferService.transfer(staged.senderAccountId, staged.recipientAccountId, staged.amount, staged.purpose)
-                    "Done — sent €${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
+                    "Done — sent $${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
                 } catch (e: InsufficientFundsException) {
                     // Step 3 fails honestly here; step 4 adds the "offer up to your balance" flow.
                     "That transfer would exceed your balance, so nothing was sent."
@@ -166,7 +168,7 @@ class AgentService(
     private suspend fun runAgent(accountId: Long, conversationId: UUID, model: LLModel, input: String): String {
         // 1. Our ToolSet. Built fresh per request so the acting accountId/conversationId are
         //    captured as fields — never LLM-supplied arguments (that would be an injection risk).
-        val tools = MoneyTransferTools(accountId, conversationId, contactService, pending)
+        val tools = MoneyTransferTools(accountId, conversationId, contactService, accountService, pending)
 
         // 2. Koog ToolRegistry: `tools(instance)` reflects the @Tool methods into Tool objects
         //    (via ToolSet.asTools()) and registers them for the agent. https://docs.koog.ai/tools-overview/
