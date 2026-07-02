@@ -28,6 +28,10 @@ dependencies {
     implementation(kotlin("reflect"))
     implementation(libs.springdoc.openapi.starter.webmvc.ui)
 
+    // Koog agentic framework (step 2+): the Spring Boot starter auto-configures the LLM
+    // executors; koog-agents (AIAgent, models, prompt executors) comes in transitively.
+    implementation(libs.koog.spring.boot.starter)
+
     // Database driver + Flyway migrations.
     runtimeOnly(libs.postgresql)
     implementation(libs.flyway.core)
@@ -42,6 +46,8 @@ dependencies {
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.junit.jupiter)
     testImplementation(libs.mockk)
+    // Koog agent testing: deterministic mock LLM executors (no live API calls in tests).
+    testImplementation(libs.koog.agents.test)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

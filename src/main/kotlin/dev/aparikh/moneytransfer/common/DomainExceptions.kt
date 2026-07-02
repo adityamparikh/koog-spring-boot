@@ -13,3 +13,10 @@ class InsufficientFundsException(val accountId: Long, val requested: BigDecimal)
 /** Thrown when a transfer amount is not strictly positive. Maps to HTTP 400. */
 class InvalidAmountException(val amount: BigDecimal) :
     RuntimeException("Transfer amount must be positive, was $amount")
+
+/**
+ * Thrown when the agent cannot complete a turn on any configured LLM provider — i.e. the
+ * primary (Anthropic) call failed and the OpenAI fallback also failed. Maps to HTTP 503.
+ */
+class AgentUnavailableException(cause: Throwable) :
+    RuntimeException("The assistant is temporarily unavailable", cause)
