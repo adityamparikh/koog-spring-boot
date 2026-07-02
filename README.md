@@ -218,8 +218,41 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
 # (reply "no"/"cancel" instead → nothing is sent)
 ```
 
+## Step 4 — Balance & overdraft protection
+Step 4 adds a **`getBalance`** tool and **overdraft protection**: when you ask to send more than
+your balance, the agent doesn't fail — it tells you your balance and asks how much you'd like to
+send instead (**you pick the amount**, up to your balance). The domain still guarantees safety —
+`TransferService` rejects any overdraw atomically — so this is purely a friendlier UX on top.
+
+> Implementation note: this is deliberately **app-side**, not a custom Koog "strategy" graph. The
+> over-balance rule is a one-line check, not a control-flow problem; see
+> [docs/notes/custom-strategies.md](docs/notes/custom-strategies.md) for what custom strategies
+> are actually for and why we skipped one here.
+
+**11. Ask to send more than your balance**
+```bash
+# 1) Over-balance request. Account 2 (Alice) has €500.
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 2" -H "Content-Type: application/json" \
+  -d '{"message": "send 5000 euros to Charlie"}'
+# → {"type":"ANSWER","reply":"You have €500 … how much would you like to send, up to €500?",
+#     "conversationId":"<id>"}   (nothing is staged — you choose the amount)
+
+# 2) Give a smaller amount. This is a normal conversational turn (/chat, not /reply),
+#    because the over-balance prompt left nothing pending — reuse the conversationId.
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 2" -H "Content-Type: application/json" \
+  -d '{"message": "send 200 instead", "conversationId": "<id>"}'
+# → {"type":"CONFIRMATION","transferSummary":"Send €200 to Charlie Williams", ...}
+
+# 3) Confirm.
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 2" -H "Content-Type: application/json" \
+  -d '{"answer": "yes"}'
+# → {"type":"ANSWER","reply":"Done — sent €200 to Charlie Williams.", ...}
+```
+
 ## What's next
-Later branches add: a custom balance-cap strategy (step 4 — "send up to your available
-balance"), Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback
+Later branches add: Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback
 (step 7), history compression (step 8), fuller tests (step 9), and a Spring AI refactor
 (step 10). See `feature.md` for the full roadmap.

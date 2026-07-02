@@ -31,10 +31,11 @@ class AgentServiceTest {
     private val conversations = ConversationStore()
     private val pending = PendingInteractionStore()
     private val contactService = mockk<ContactService>()
+    private val accountService = mockk<dev.aparikh.moneytransfer.account.AccountService>()
     private val transferService = mockk<TransferService>(relaxed = true)
     private val interpreter = mockk<AffirmationInterpreter>()
     private val service = AgentService(
-        executor, conversations, pending, contactService, transferService, interpreter, AgentModelProperties(),
+        executor, conversations, pending, contactService, accountService, transferService, interpreter, AgentModelProperties(),
     )
 
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")

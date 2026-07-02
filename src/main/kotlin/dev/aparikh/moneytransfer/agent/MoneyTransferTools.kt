@@ -3,6 +3,7 @@ package dev.aparikh.moneytransfer.agent
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import java.math.BigDecimal
 
@@ -29,6 +30,7 @@ class MoneyTransferTools(
     private val accountId: Long,
     private val conversationId: java.util.UUID,
     private val contactService: ContactService,
+    private val accountService: AccountService,
     private val pending: PendingInteractionStore,
 ) : ToolSet {
 
@@ -50,6 +52,12 @@ class MoneyTransferTools(
         if (contacts.isEmpty()) return "You have no saved contacts."
         return contacts.joinToString("\n") { "${it.contactId} | ${it.displayName} | ${it.phoneNumber ?: "—"}" }
     }
+
+    /** The acting user's current available balance (FR-11). */
+    @Tool
+    @LLMDescription("Get the current user's available balance, in EUR.")
+    fun getBalance(): String =
+        "Your available balance is €${accountService.getBalance(accountId).toPlainString()}."
 
     /**
      * Resolves a recipient by name/nickname. One match → returns it; ambiguous or unknown →
@@ -89,31 +97,55 @@ class MoneyTransferTools(
     /**
      * **Stages** a transfer for confirmation — it does NOT move money. Records a pending
      * confirmation; the user must approve before `AgentService` executes it.
+     *
+     * **Overdraft protection (FR-12):** when the requested amount exceeds the sender's balance,
+     * this does **not** stage anything and does **not** silently cap to the balance — it tells
+     * the model to ask the user how much they want to send (up to their balance), so the **user's
+     * input decides the amount**, not the tool. This is an AI-layer UX nicety, not a safety guard:
+     * the domain (`TransferService`) still rejects any overdraw atomically, so a stale/wrong
+     * balance read here can never actually overdraw.
      */
     @Tool
     @LLMDescription(
         "Prepare a money transfer to one of the user's contacts. This does NOT send money — it " +
-            "stages the transfer and asks the user to confirm. Only call this once you have a " +
-            "concrete recipient contactId (from getContacts or chooseRecipient).",
+            "stages the transfer and asks the user to confirm. If the amount is more than the " +
+            "user's balance, it does NOT stage anything — instead, ask the user how much they'd " +
+            "like to send (up to their available balance) and call this tool again with that " +
+            "amount. Only call this once you have a concrete recipient contactId (from getContacts " +
+            "or chooseRecipient).",
     )
     fun prepareTransfer(
         @LLMDescription("The recipient's contactId") recipientContactId: Long,
         @LLMDescription("The amount to send in EUR, e.g. 50 or 50.00") amount: String,
         @LLMDescription("Optional note describing the transfer's purpose") purpose: String? = null,
     ): String {
-        val parsed = try {
+        val requested = try {
             BigDecimal(amount.trim())
         } catch (_: NumberFormatException) {
             return "\"$amount\" is not a valid amount. Ask the user for a numeric EUR amount."
         }
-        if (parsed.signum() <= 0) return "The amount must be greater than zero."
+        if (requested.signum() <= 0) return "The amount must be greater than zero."
 
         val contact = contactService.getContact(accountId, recipientContactId)
+        val available = accountService.getBalance(accountId)
+
+        // Overdraft protection: don't stage an over-balance transfer. Let the USER choose the
+        // amount (up to their balance) on the next turn — we don't assume they want it all.
+        if (requested > available) {
+            return if (available.signum() <= 0) {
+                "The user has no available balance (€${available.toPlainString()}), so nothing can be sent right now."
+            } else {
+                "The user asked to send €${requested.toPlainString()} but only has €${available.toPlainString()} " +
+                    "available. Do NOT stage a transfer — ask the user how much they would like to send, up to " +
+                    "€${available.toPlainString()}, then call prepareTransfer again with that amount."
+            }
+        }
+
         val staged = StagedTransfer(
             senderAccountId = accountId,
             recipientAccountId = contact.contactAccountId,
             recipientDisplay = contact.displayName,
-            amount = parsed,
+            amount = requested,
             purpose = purpose,
         )
         pending.put(conversationId, PendingInteraction.Confirmation(staged))
