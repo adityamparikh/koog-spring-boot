@@ -6,6 +6,7 @@ import ai.koog.agents.core.tools.reflect.ToolSet
 import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import java.math.BigDecimal
+import java.util.UUID
 
 /**
  * Koog **tools** the agent can call to act on the money-transfer domain.
@@ -28,7 +29,7 @@ import java.math.BigDecimal
 @LLMDescription("Tools for viewing contacts and preparing money transfers for the current user.")
 class MoneyTransferTools(
     private val accountId: Long,
-    private val conversationId: java.util.UUID,
+    private val conversationId: UUID,
     private val contactService: ContactService,
     private val accountService: AccountService,
     private val pending: PendingInteractionStore,

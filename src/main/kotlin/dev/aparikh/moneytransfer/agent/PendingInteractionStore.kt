@@ -3,7 +3,7 @@ package dev.aparikh.moneytransfer.agent
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
 import java.time.Instant
@@ -72,8 +72,12 @@ sealed interface PendingInteraction {
 @Component
 class PendingInteractionStore(
     private val repository: PendingInteractionRepository,
-    private val objectMapper: ObjectMapper,
 ) {
+
+    // A dedicated mapper owns the on-disk payload format, decoupled from the web MVC ObjectMapper so
+    // a controller-side Jackson change (naming strategy, default typing, …) can't silently alter or
+    // break already-stored payloads. The table is owned here, so its serialization is too.
+    private val objectMapper = jacksonObjectMapper()
 
     fun get(conversationId: UUID): PendingInteraction? =
         repository.findPayload(conversationId)?.let(::deserialize)

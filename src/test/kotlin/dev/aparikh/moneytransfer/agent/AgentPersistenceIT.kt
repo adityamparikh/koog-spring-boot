@@ -5,7 +5,6 @@ import ai.koog.agents.features.chathistory.jdbc.PostgresJdbcChatHistoryProvider
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import ai.koog.prompt.message.ResponseMetaInfo
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -92,7 +91,7 @@ class AgentPersistenceIT {
         pending.put(id, confirmation("25.00"))
 
         // A new store holds no in-memory state — it can only see the row because it's in Postgres.
-        val afterRestart = PendingInteractionStore(pendingRepo, jacksonObjectMapper())
+        val afterRestart = PendingInteractionStore(pendingRepo)
         val loaded = afterRestart.get(id)
 
         assertTrue(loaded is PendingInteraction.Confirmation)

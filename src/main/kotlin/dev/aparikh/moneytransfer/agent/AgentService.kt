@@ -32,6 +32,13 @@ import java.util.UUID
 /** The kind of turn the API is reporting back to the caller. */
 enum class InteractionType { ANSWER, CLARIFICATION, CONFIRMATION }
 
+/** The [InteractionType] a pending item asks the client to answer — the single mapping used by `tag`/`status`. */
+private val PendingInteraction.awaiting: InteractionType
+    get() = when (this) {
+        is PendingInteraction.Clarification -> InteractionType.CLARIFICATION
+        is PendingInteraction.Confirmation -> InteractionType.CONFIRMATION
+    }
+
 /**
  * The agent's tagged result — produced by [AgentService] and returned as-is by the controller
  * (it is the public JSON contract). [type] tells the client what to do next:
@@ -71,6 +78,12 @@ data class ChatResponse(
  * only *stages* a transfer into the (now Postgres-backed) [PendingInteractionStore], and `reply(...)`
  * executes it deterministically once the user affirms — so no money moves without an explicit "yes",
  * and a paused confirmation survives a restart (AC-18).
+ *
+ * Threading note: the `suspend` methods here call blocking JDBC (the stores, `TransferService`,
+ * `ChatHistoryProvider`) directly rather than wrapping each in `withContext(Dispatchers.IO)`. That is
+ * deliberate — the app runs Spring MVC with virtual threads enabled (`spring.threads.virtual.enabled`),
+ * so a blocked carrier is cheap; the coroutine boundary exists only because Koog's `agent.run` is
+ * `suspend`, not because we need non-blocking I/O.
  */
 @Service
 class AgentService(
@@ -147,12 +160,7 @@ class AgentService(
     /** A read-only snapshot of a conversation for the status endpoint (FR-14). */
     suspend fun status(conversationId: UUID): ConversationStatusResponse {
         val turns = chatHistory.load(conversationId.toString()).count { it is Message.User }
-        val awaiting = when (pending.get(conversationId)) {
-            is PendingInteraction.Clarification -> InteractionType.CLARIFICATION
-            is PendingInteraction.Confirmation -> InteractionType.CONFIRMATION
-            null -> null
-        }
-        return ConversationStatusResponse(conversationId, turns, awaiting)
+        return ConversationStatusResponse(conversationId, turns, pending.get(conversationId)?.awaiting)
     }
 
     private suspend fun resolveConfirmation(
@@ -170,9 +178,7 @@ class AgentService(
                 //    top of reply() (which a concurrent /chat could have re-staged in between).
                 val claimed = pending.consume(conversationId) as? PendingInteraction.Confirmation
                 if (claimed == null) {
-                    val reply = "That transfer was already handled, so nothing else was sent."
-                    record(conversationId, answer, reply)
-                    return ChatResponse(reply, conversationId, InteractionType.ANSWER)
+                    return respond(conversationId, answer, "That transfer was already handled, so nothing else was sent.")
                 }
                 val target = claimed.staged
                 // Deliberate ordering: consume() commits before transfer() (reply is not @Transactional),
@@ -187,23 +193,35 @@ class AgentService(
                 } catch (e: UnknownAccountException) {
                     "That account no longer exists, so nothing was sent."
                 }
-                record(conversationId, answer, reply)
-                ChatResponse(reply, conversationId, InteractionType.ANSWER)
+                respond(conversationId, answer, reply)
             }
 
             Affirmation.DENY -> {
                 pending.clear(conversationId)
-                val reply = "Okay, I've cancelled that transfer. Nothing was sent."
-                record(conversationId, answer, reply)
-                ChatResponse(reply, conversationId, InteractionType.ANSWER)
+                respond(conversationId, answer, "Okay, I've cancelled that transfer. Nothing was sent.")
             }
 
-            Affirmation.UNCLEAR -> {
-                val reply = "Sorry, I didn't catch that. Reply \"yes\" to ${staged.summary}, or \"no\" to cancel."
-                record(conversationId, answer, reply)
-                ChatResponse(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = staged.summary)
-            }
+            Affirmation.UNCLEAR ->
+                respond(
+                    conversationId,
+                    answer,
+                    "Sorry, I didn't catch that. Reply \"yes\" to ${staged.summary}, or \"no\" to cancel.",
+                    type = InteractionType.CONFIRMATION,
+                    transferSummary = staged.summary,
+                )
         }
+    }
+
+    /** Records the [userMessage]/[reply] exchange into ChatMemory, then builds the tagged response. */
+    private suspend fun respond(
+        conversationId: UUID,
+        userMessage: String,
+        reply: String,
+        type: InteractionType = InteractionType.ANSWER,
+        transferSummary: String? = null,
+    ): ChatResponse {
+        record(conversationId, userMessage, reply)
+        return ChatResponse(reply, conversationId, type, transferSummary = transferSummary)
     }
 
     /**
@@ -267,14 +285,16 @@ class AgentService(
     }
 
     /** Tags a completed run by inspecting what (if anything) it left pending. */
-    private fun tag(reply: String, conversationId: UUID): ChatResponse =
-        when (val p = pending.get(conversationId)) {
-            is PendingInteraction.Clarification ->
-                ChatResponse(reply, conversationId, InteractionType.CLARIFICATION, candidates = p.candidates)
-            is PendingInteraction.Confirmation ->
-                ChatResponse(reply, conversationId, InteractionType.CONFIRMATION, transferSummary = p.staged.summary)
-            null -> ChatResponse(reply, conversationId, InteractionType.ANSWER)
-        }
+    private fun tag(reply: String, conversationId: UUID): ChatResponse {
+        val p = pending.get(conversationId)
+        return ChatResponse(
+            reply,
+            conversationId,
+            type = p?.awaiting ?: InteractionType.ANSWER,
+            candidates = (p as? PendingInteraction.Clarification)?.candidates ?: emptyList(),
+            transferSummary = (p as? PendingInteraction.Confirmation)?.staged?.summary,
+        )
+    }
 
     /**
      * Records an app-side exchange (a confirmation resolution) into `ChatMemory` by hand.
