@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
@@ -107,5 +108,19 @@ class AgentControllerTest {
             .andExpect(status().isConflict)
             .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
             .andExpect(jsonPath("$.title").value("No pending interaction"))
+    }
+
+    @Test
+    fun `status reports turn count and what the conversation awaits`() {
+        coEvery { agentService.status(conversationId) } returns
+            ConversationStatusResponse(conversationId, turns = 3, awaiting = InteractionType.CONFIRMATION)
+
+        val async = mockMvc.perform(get("/api/v1/agent/$conversationId/status"))
+            .andExpect(request().asyncStarted()).andReturn()
+
+        mockMvc.perform(asyncDispatch(async))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.turns").value(3))
+            .andExpect(jsonPath("$.awaiting").value("CONFIRMATION"))
     }
 }

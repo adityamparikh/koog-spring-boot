@@ -1,6 +1,9 @@
 package dev.aparikh.moneytransfer.agent
 
+import ai.koog.agents.chatMemory.feature.InMemoryChatHistoryProvider
+import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.contact.ContactService
@@ -23,19 +26,21 @@ import java.util.UUID
  * Tests the deterministic, app-side parts of [AgentService] — the confirm-gate that guarantees
  * "no money moves without an affirmation" (AC-13) and the reply routing. The LLM-driven tool
  * loop is covered by [MoneyTransferToolsTest] (tool behaviour) and the mock-executor flow test;
- * here the agent is never run (reply resolves confirmations app-side).
+ * here the agent is never run (reply resolves confirmations app-side). Koog's in-memory ChatMemory
+ * and Persistence providers stand in for the Postgres-backed ones used in production.
  */
 class AgentServiceTest {
 
     private val executor = getMockExecutor { mockLLMAnswer("hi").asDefaultResponse }
-    private val conversations = ConversationStore()
-    private val pending = PendingInteractionStore()
+    private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository(), jacksonObjectMapper())
+    private val chatHistory = InMemoryChatHistoryProvider()
+    private val checkpointStorage = InMemoryPersistenceStorageProvider()
     private val contactService = mockk<ContactService>()
     private val accountService = mockk<dev.aparikh.moneytransfer.account.AccountService>()
     private val transferService = mockk<TransferService>(relaxed = true)
     private val interpreter = mockk<AffirmationInterpreter>()
     private val service = AgentService(
-        executor, conversations, pending, contactService, accountService, transferService, interpreter, AgentModelProperties(),
+        executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService, interpreter, AgentModelProperties(),
     )
 
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")
@@ -102,20 +107,5 @@ class AgentServiceTest {
         assertThrows<NoPendingInteractionException> {
             runBlocking { service.reply(1, UUID.randomUUID(), "yes") }
         }
-    }
-
-    @Test
-    fun `renderConversation returns the bare message for a new conversation`() {
-        assertEquals("Send 50 to Alice", service.renderConversation(emptyList(), "Send 50 to Alice"))
-    }
-
-    @Test
-    fun `renderConversation replays prior turns`() {
-        val history = listOf(Turn(Role.USER, "who are my contacts?"), Turn(Role.ASSISTANT, "Alice, Bob, two Daniels."))
-        val input = service.renderConversation(history, "send 50 to Craig")
-
-        assertTrue(input.contains("who are my contacts?"))
-        assertTrue(input.contains("Alice, Bob, two Daniels."))
-        assertTrue(input.trimEnd().endsWith("send 50 to Craig"))
     }
 }

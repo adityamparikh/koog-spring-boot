@@ -9,6 +9,12 @@ group = "dev.aparikh"
 version = "0.0.1-SNAPSHOT"
 description = "koog-spring-boot"
 
+// Override the Spring Boot BOM's kotlin-serialization version (1.6.3) up to what Koog 1.0.0 needs.
+// Koog's JDBC persistence providers serialize Message via kotlin.time.Instant →
+// kotlinx.serialization.internal.InstantSerializer, which only exists from 1.9.0. The Spring
+// dependency-management plugin honours this `extra` property when resolving the managed BOM.
+extra["kotlin-serialization.version"] = "1.9.0"
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
@@ -31,6 +37,11 @@ dependencies {
     // Koog agentic framework (step 2+): the Spring Boot starter auto-configures the LLM
     // executors; koog-agents (AIAgent, models, prompt executors) comes in transitively.
     implementation(libs.koog.spring.boot.starter)
+
+    // Koog persistence (step 5): DataSource-backed JDBC providers for the ChatMemory transcript
+    // store and the Persistence checkpoint store. Optional modules, not transitive via koog-agents.
+    implementation(libs.koog.agents.features.chat.history.jdbc)
+    implementation(libs.koog.agents.features.persistence.jdbc)
 
     // Database driver + Flyway migrations.
     runtimeOnly(libs.postgresql)

@@ -46,6 +46,14 @@ koog-spring-boot-starter = { module = "ai.koog:koog-spring-boot-starter", versio
 # Koog's deterministic agent-testing module: getMockExecutor / mockLLMAnswer, so agent tests
 # never hit a real LLM API. https://docs.koog.ai/testing/
 koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
+# Koog persistence — the DataSource-backed JDBC providers for the two built-in features we adopt
+# in step 5. Both are *excluded* from koog-agents' transitive graph (they're optional storage
+# backends), so they must be declared explicitly:
+#  • agents-features-chat-history-jdbc → PostgresJdbcChatHistoryProvider (ChatMemory's transcript store)
+#  • agents-features-persistence-jdbc  → PostgresJdbcPersistenceStorageProvider (Persistence checkpoints)
+# The ChatMemory & Persistence *features* themselves ride in transitively via koog-agents.
+koog-agents-features-chat-history-jdbc = { module = "ai.koog:agents-features-chat-history-jdbc", version.ref = "koog" }
+koog-agents-features-persistence-jdbc = { module = "ai.koog:agents-features-persistence-jdbc", version.ref = "koog" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

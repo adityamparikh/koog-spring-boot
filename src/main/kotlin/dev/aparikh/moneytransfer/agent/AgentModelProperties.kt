@@ -16,10 +16,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *   → `claude-opus-4-7`). Wired now; first used by step 4's custom strategy.
  * @property openAiFallbackModel OpenAI model used as the cross-provider error-fallback
  *   (feature.md's `gpt-5.4`, an exact Koog id match).
+ * @property conversationTtlSeconds how long durable conversation state (Koog's `chat_history` and
+ *   `agent_checkpoints`, and our `pending_interaction`) lives before it is eligible for eviction.
+ *   Passed as `ttlSeconds` to the Koog JDBC providers and used by the app-side TTL sweep. Default
+ *   is 24h — long enough for a real multi-turn confirmation, short enough that abandoned staged
+ *   transfers don't linger.
  */
 @ConfigurationProperties(prefix = "app.agent")
 data class AgentModelProperties(
     val anthropicModel: String = "claude-sonnet-4-6",
     val anthropicComplexModel: String = "claude-opus-4-7",
     val openAiFallbackModel: String = "gpt-5.4",
+    val conversationTtlSeconds: Long = 86_400,
 )
