@@ -1,5 +1,6 @@
 package dev.aparikh.moneytransfer.agent
 
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -17,6 +18,17 @@ data class ChatRequest(
 /** An answer to a pending clarification or confirmation for a conversation. */
 data class ReplyRequest(
     val answer: String,
+)
+
+/**
+ * A read-only snapshot of a conversation's durable state (FR-14). [turns] is the number of user
+ * messages held in `ChatMemory`; [awaiting] is what the conversation is currently paused on
+ * (`CLARIFICATION`/`CONFIRMATION`), or null if nothing is pending.
+ */
+data class ConversationStatusResponse(
+    val conversationId: UUID,
+    val turns: Int,
+    val awaiting: InteractionType?,
 )
 
 /**
@@ -46,4 +58,11 @@ class AgentController(
         @RequestBody request: ReplyRequest,
     ): ChatResponse =
         agentService.reply(userId, conversationId, request.answer)
+
+    /** Reports a conversation's durable state: how many turns it holds and what (if anything) it awaits. */
+    @GetMapping("/{conversationId}/status")
+    suspend fun status(
+        @PathVariable conversationId: UUID,
+    ): ConversationStatusResponse =
+        agentService.status(conversationId)
 }

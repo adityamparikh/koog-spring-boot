@@ -1,9 +1,13 @@
 package dev.aparikh.moneytransfer.agent
 
+import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.annotation.JsonSubTypes
+import com.fasterxml.jackson.annotation.JsonTypeInfo
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
+import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /** A candidate contact offered to the user during recipient disambiguation. */
 data class ContactCandidate(
@@ -24,7 +28,8 @@ data class StagedTransfer(
     val amount: BigDecimal,
     val purpose: String?,
 ) {
-    /** Human-readable one-liner used in the CONFIRMATION prompt. */
+    /** Human-readable one-liner used in the CONFIRMATION prompt. Derived — never persisted. */
+    @get:JsonIgnore
     val summary: String
         get() = buildString {
             append("Send $")
@@ -35,7 +40,17 @@ data class StagedTransfer(
         }
 }
 
-/** What a conversation is currently waiting for the user to answer. */
+/**
+ * What a conversation is currently waiting for the user to answer.
+ *
+ * Serialized to the `pending_interaction.payload` column as JSON; the Jackson `@JsonTypeInfo`
+ * discriminator (`kind`) makes the sealed hierarchy round-trip polymorphically.
+ */
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
+@JsonSubTypes(
+    JsonSubTypes.Type(value = PendingInteraction.Clarification::class, name = "CLARIFICATION"),
+    JsonSubTypes.Type(value = PendingInteraction.Confirmation::class, name = "CONFIRMATION"),
+)
 sealed interface PendingInteraction {
     /** The recipient was ambiguous/unknown; the user must pick one of [candidates]. */
     data class Clarification(val name: String, val candidates: List<ContactCandidate>) : PendingInteraction
@@ -45,23 +60,43 @@ sealed interface PendingInteraction {
 }
 
 /**
- * In-memory, per-`conversationId` store of the one thing a conversation is awaiting (a
- * clarification or a confirmation). This is the app-owned HITL state — deliberately **not**
- * Koog's checkpoint/persistence, which isn't needed until step 5 (durable restart-resume).
- * At most one pending interaction per conversation; a new one overwrites (last-write-wins).
+ * Per-`conversationId` store of the one thing a conversation is awaiting (a clarification or a
+ * confirmation) — the app-owned HITL state, **persisted to Postgres** (step 5).
+ *
+ * Koog has no construct for this: `ChatMemory` stores messages, and `Persistence` tombstones
+ * completed runs, so a "staged transfer awaiting a yes across turns" has no home in either. Persisting
+ * it here is what lets a paused confirmation survive an app restart (AC-18) and stay idempotent under
+ * concurrent replies (the atomic [consume]). The public API stays synchronous (blocking JDBC) so the
+ * non-suspend `@Tool` methods in [MoneyTransferTools] call `put`/`clear` unchanged.
  */
 @Component
-class PendingInteractionStore {
+class PendingInteractionStore(
+    private val repository: PendingInteractionRepository,
+    private val objectMapper: ObjectMapper,
+) {
 
-    private val pending = ConcurrentHashMap<UUID, PendingInteraction>()
-
-    fun get(conversationId: UUID): PendingInteraction? = pending[conversationId]
+    fun get(conversationId: UUID): PendingInteraction? =
+        repository.findPayload(conversationId)?.let(::deserialize)
 
     fun put(conversationId: UUID, interaction: PendingInteraction) {
-        pending[conversationId] = interaction
+        repository.upsert(conversationId, objectMapper.writeValueAsString(interaction))
     }
 
     fun clear(conversationId: UUID) {
-        pending.remove(conversationId)
+        repository.deleteByConversationId(conversationId)
     }
+
+    /**
+     * Atomically removes and returns what the conversation was awaiting. Used to resolve a
+     * confirmation exactly once: `DELETE … RETURNING` guarantees only one caller of a racing pair
+     * gets the staged transfer, so an affirmed transfer can fire at most once.
+     */
+    fun consume(conversationId: UUID): PendingInteraction? =
+        repository.consume(conversationId)?.let(::deserialize)
+
+    /** Evicts abandoned rows older than [cutoff]; returns the number removed. Driven by the TTL sweep. */
+    fun deleteOlderThan(cutoff: Instant): Int = repository.deleteOlderThan(cutoff)
+
+    private fun deserialize(json: String): PendingInteraction =
+        objectMapper.readValue(json, PendingInteraction::class.java)
 }

@@ -21,7 +21,7 @@ class MoneyTransferToolsTest {
 
     private val contactService = mockk<ContactService>()
     private val accountService = mockk<AccountService>()
-    private val pending = PendingInteractionStore()
+    private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository(), com.fasterxml.jackson.module.kotlin.jacksonObjectMapper())
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-000000000001")
     private val tools = MoneyTransferTools(
         accountId = 1, conversationId = conversationId,

@@ -1,14 +1,16 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step3-tools`) is step 3:
-the agent gains tools that act on the money-transfer domain — list contacts, disambiguate a
-recipient, and send money with a human-in-the-loop confirmation.**
+branch that adds one capability (see `feature.md`). **This branch (`step5-persistence`) is step 5:
+conversation state becomes durable — transcripts, run checkpoints, and paused confirmations
+survive an app restart — using Koog's built-in `ChatMemory` and `Persistence` features backed by
+Postgres.**
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
-> covers **step 1** (money-transfer REST), **step 2** (AI agent chat), and **step 3** (agent
-> tools & human-in-the-loop).
+> covers **step 1** (money-transfer REST), **step 2** (AI agent chat), **step 3** (agent tools &
+> human-in-the-loop), **step 4** (balance & overdraft protection), and **step 5** (durable
+> persistence).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -252,7 +254,37 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
 # → {"type":"ANSWER","reply":"Done — sent $200 to Charlie Williams.", ...}
 ```
 
+## Step 5 — Durable persistence (Koog `ChatMemory` + `Persistence`)
+Step 5 makes conversation state **survive a restart**, using Koog's built-in constructs backed by
+Postgres (Flyway `V3` creates the tables): `ChatMemory` owns the transcript, `Persistence`
+checkpoints each run, and the app-side confirm-gate is persisted so a paused "yes/no" isn't lost.
+A `GET /{conversationId}/status` endpoint reports how many turns a conversation holds and what (if
+anything) it's awaiting.
+
+> The confirm-gate stays **app-side** on purpose — Koog has no cross-turn "pending decision"
+> construct, and the irreversible transfer must not live inside the probabilistic agent loop. See
+> [docs/notes/persistence.md](docs/notes/persistence.md) for the full design, why each piece maps
+> (or doesn't) onto Koog, and two dependency gotchas (a kotlinx-serialization pin and a Jackson
+> `@JsonIgnore`) worth knowing before you wire the JDBC providers.
+
+```bash
+# Stage a confirmation, then check status BEFORE replying — it's awaiting your "yes".
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "send 50 to Alice for lunch"}'
+# → {"type":"CONFIRMATION","transferSummary":"Send $50 to Alice Smith for \"lunch\"","conversationId":"<id>"}
+
+curl -s http://localhost:8080/api/v1/agent/<id>/status
+# → {"conversationId":"<id>","turns":1,"awaiting":"CONFIRMATION"}
+# Restart the app here: the pending confirmation is in Postgres, so the reply below still works.
+
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"answer": "yes"}'
+# → {"type":"ANSWER","reply":"Done — sent $50 to Alice Smith.","conversationId":"<id>"}
+```
+
 ## What's next
-Later branches add: Postgres checkpointing (step 5), OpenTelemetry (step 6), transfer rollback
-(step 7), history compression (step 8), fuller tests (step 9), and a Spring AI refactor
-(step 10). See `feature.md` for the full roadmap.
+Later branches add: OpenTelemetry (step 6), transfer rollback (step 7), history compression
+(step 8), fuller tests (step 9), and a Spring AI refactor (step 10). See `feature.md` for the full
+roadmap.

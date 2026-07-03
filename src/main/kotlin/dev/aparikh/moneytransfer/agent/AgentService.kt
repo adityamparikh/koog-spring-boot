@@ -1,19 +1,25 @@
 package dev.aparikh.moneytransfer.agent
 
+import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
+import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
+import ai.koog.agents.snapshot.feature.Persistence
+import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import ai.koog.prompt.executor.clients.LLModelDefinitions
 import ai.koog.prompt.executor.clients.anthropic.AnthropicModels
 import ai.koog.prompt.executor.clients.modelsById
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.RequestMetaInfo
+import ai.koog.prompt.message.ResponseMetaInfo
 import dev.aparikh.moneytransfer.common.AgentUnavailableException
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.common.UnknownAccountException
-import dev.aparikh.moneytransfer.common.UnknownContactException
 import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferService
@@ -52,14 +58,25 @@ data class ChatResponse(
  * multi-LLM fallback loop (Anthropic → OpenAI). The default `singleRunStrategy()` drives the
  * LLM↔tool loop until the model produces a text answer. https://docs.koog.ai/tools-overview/
  *
- * HITL is plain multi-turn conversation (the transcript in [ConversationStore] is the state) plus
- * a deterministic confirm-gate: `prepareTransfer` only *stages* a transfer, and `reply(...)`
- * executes it **app-side** once the user affirms — so no money moves without an explicit "yes".
+ * **Durable state (step 5) uses Koog's built-in constructs**, keyed by `conversationId` (passed as
+ * each run's `sessionId`):
+ *  - `ChatMemory` (over [chatHistory], a Postgres provider) owns the conversation transcript — it
+ *    loads prior turns into the prompt at run start and stores them at completion, replacing the
+ *    old hand-rolled transcript replay.
+ *  - `Persistence` (over [checkpointStorage], a Postgres provider) checkpoints each run for
+ *    intra-run crash recovery. Completed runs tombstone, so a *finished* turn is never replayed —
+ *    cross-turn continuity is ChatMemory's job, not Persistence's.
+ *
+ * HITL stays app-side because Koog has no cross-turn "pending decision" construct: `prepareTransfer`
+ * only *stages* a transfer into the (now Postgres-backed) [PendingInteractionStore], and `reply(...)`
+ * executes it deterministically once the user affirms — so no money moves without an explicit "yes",
+ * and a paused confirmation survives a restart (AC-18).
  */
 @Service
 class AgentService(
     @param:Qualifier("multiLLMPromptExecutor") private val multiLLMPromptExecutor: PromptExecutor,
-    private val conversations: ConversationStore,
+    private val chatHistory: ChatHistoryProvider,
+    private val checkpointStorage: PersistenceStorageProvider<*>,
     private val pending: PendingInteractionStore,
     private val contactService: ContactService,
     private val accountService: AccountService,
@@ -80,17 +97,22 @@ class AgentService(
      * Runs one conversational turn. A fresh `/chat` starts a new intent, so any stale pending
      * clarification/confirmation for this conversation is discarded first (edge rule). Returns a
      * response tagged by what the turn produced.
+     *
+     * The prior transcript is no longer rendered into [message] by hand — `ChatMemory` loads it from
+     * Postgres and injects it into the prompt, keyed by the `conversationId` we pass as the run's
+     * `sessionId`, and stores the updated transcript when the run completes.
      */
     suspend fun chat(accountId: Long, message: String, conversationId: UUID?): ChatResponse {
         val id = conversationId ?: UUID.randomUUID()
-        pending.clear(id) // new intent — a forgotten "yes" can't fire a stale transfer later
-        val input = renderConversation(conversations.historyOf(id), message)
 
         var lastError: Exception? = null
         for ((index, model) in llms.withIndex()) {
+            // Clear before *each* attempt, not once before the loop: a new intent discards any stale
+            // "yes", and — crucially — a fallback retry must not inherit a confirmation that a prior
+            // attempt staged and then abandoned by failing mid-run.
+            pending.clear(id)
             try {
-                val reply = runAgent(accountId, id, model, input)
-                conversations.append(id, Turn(Role.USER, message), Turn(Role.ASSISTANT, reply))
+                val reply = runAgent(accountId, id, model, message)
                 return tag(reply, id)
             } catch (e: CancellationException) {
                 throw e
@@ -109,9 +131,9 @@ class AgentService(
 
     /**
      * Answers whatever the conversation is awaiting. A pending **clarification** is resolved by
-     * re-running the agent with [answer] as the next message (the LLM re-derives the amount from
-     * the transcript). A pending **confirmation** is resolved **app-side**: affirm → execute the
-     * staged transfer, deny → discard, unclear → re-prompt.
+     * re-running the agent with [answer] as the next message (`ChatMemory` supplies the prior turns,
+     * so the LLM re-derives the amount from the transcript). A pending **confirmation** is resolved
+     * **app-side**: affirm → execute the staged transfer, deny → discard, unclear → re-prompt.
      *
      * @throws NoPendingInteractionException if nothing is awaiting a reply.
      */
@@ -122,7 +144,18 @@ class AgentService(
             null -> throw NoPendingInteractionException(conversationId)
         }
 
-    private fun resolveConfirmation(
+    /** A read-only snapshot of a conversation for the status endpoint (FR-14). */
+    suspend fun status(conversationId: UUID): ConversationStatusResponse {
+        val turns = chatHistory.load(conversationId.toString()).count { it is Message.User }
+        val awaiting = when (pending.get(conversationId)) {
+            is PendingInteraction.Clarification -> InteractionType.CLARIFICATION
+            is PendingInteraction.Confirmation -> InteractionType.CONFIRMATION
+            null -> null
+        }
+        return ConversationStatusResponse(conversationId, turns, awaiting)
+    }
+
+    private suspend fun resolveConfirmation(
         conversationId: UUID,
         confirmation: PendingInteraction.Confirmation,
         answer: String,
@@ -130,10 +163,24 @@ class AgentService(
         val staged = confirmation.staged
         return when (affirmationInterpreter.interpret(answer)) {
             Affirmation.AFFIRM -> {
-                pending.clear(conversationId)
+                // Consume = atomically remove-and-return the staged transfer. Doing both here gives us:
+                //  • idempotency — if two "yes" replies race, only one DELETE…RETURNING sees the row,
+                //    so the transfer fires at most once (FR-14); the loser gets null below.
+                //  • correctness — we execute exactly what we claimed here, not the snapshot read at the
+                //    top of reply() (which a concurrent /chat could have re-staged in between).
+                val claimed = pending.consume(conversationId) as? PendingInteraction.Confirmation
+                if (claimed == null) {
+                    val reply = "That transfer was already handled, so nothing else was sent."
+                    record(conversationId, answer, reply)
+                    return ChatResponse(reply, conversationId, InteractionType.ANSWER)
+                }
+                val target = claimed.staged
+                // Deliberate ordering: consume() commits before transfer() (reply is not @Transactional),
+                // so a crash between them loses the staged intent — no money moved, never a double-send.
+                // Do NOT reorder transfer before consume; that trades the safe failure for a double-send.
                 val reply = try {
-                    transferService.transfer(staged.senderAccountId, staged.recipientAccountId, staged.amount, staged.purpose)
-                    "Done — sent $${staged.amount.toPlainString()} to ${staged.recipientDisplay}."
+                    transferService.transfer(target.senderAccountId, target.recipientAccountId, target.amount, target.purpose)
+                    "Done — sent $${target.amount.toPlainString()} to ${target.recipientDisplay}."
                 } catch (e: InsufficientFundsException) {
                     // Step 3 fails honestly here; step 4 adds the "offer up to your balance" flow.
                     "That transfer would exceed your balance, so nothing was sent."
@@ -193,11 +240,30 @@ class AgentService(
                 onToolCallStarting { e -> logger.info("tool → {} args={}", e.toolName, e.toolArgs) }
                 onToolCallCompleted { e -> logger.info("tool ← {} result={}", e.toolName, e.toolResult) }
             }
+
+            // 5. Koog ChatMemory (step 5): the transcript. At run start it loads prior turns for this
+            //    sessionId and injects them into the prompt; at completion it stores the updated
+            //    transcript back to Postgres. windowSize bounds how many messages are kept.
+            //    https://docs.koog.ai/agent-persistency/
+            install(ChatMemory) {
+                chatHistoryProvider = chatHistory
+                windowSize(MEMORY_WINDOW)
+            }
+
+            // 6. Koog Persistence (step 5): checkpoints each node for intra-run crash recovery, keyed
+            //    by the same sessionId. Completed runs tombstone, so a finished turn is not replayed —
+            //    only a run interrupted mid-flight resumes. Money never moves inside the run (tools
+            //    only stage), so a resumed run re-stages harmlessly rather than double-sending.
+            install(Persistence) {
+                storage = checkpointStorage
+                enableAutomaticPersistence = true
+            }
         }
 
-        // 5. Run the turn. singleRunStrategy drives LLM↔tool iterations internally; `run` suspends
-        //    until the agent produces its final text answer, which we return to the caller.
-        return agent.run(input)
+        // 7. Run the turn. The conversationId is the run's sessionId — ChatMemory and Persistence
+        //    both scope to it. singleRunStrategy drives LLM↔tool iterations internally; `run`
+        //    suspends until the agent produces its final text answer, which we return.
+        return agent.run(input, conversationId.toString())
     }
 
     /** Tags a completed run by inspecting what (if anything) it left pending. */
@@ -210,17 +276,28 @@ class AgentService(
             null -> ChatResponse(reply, conversationId, InteractionType.ANSWER)
         }
 
-    private fun record(conversationId: UUID, userMessage: String, reply: String) =
-        conversations.append(conversationId, Turn(Role.USER, userMessage), Turn(Role.ASSISTANT, reply))
-
-    /** Renders prior turns + the new message into one input string (no tool state in here). */
-    internal fun renderConversation(history: List<Turn>, message: String): String {
-        if (history.isEmpty()) return message
-        val transcript = history.joinToString("\n") { turn ->
-            val who = if (turn.role == Role.USER) "User" else "Assistant"
-            "$who: ${turn.content}"
-        }
-        return "Conversation so far:\n$transcript\n\nUser: $message"
+    /**
+     * Records an app-side exchange (a confirmation resolution) into `ChatMemory` by hand.
+     *
+     * The confirm-gate resolves **without** running the agent, so those turns never pass through
+     * ChatMemory's own store interceptor. We append them to the provider directly so the transcript
+     * stays complete for the next `/chat`. (The clarification path runs the agent, so it's stored
+     * automatically — only confirmation outcomes need this.)
+     *
+     * Note: this manual append bypasses ChatMemory's `windowSize` (that's a feature-level pre-processor
+     * applied on agent runs, not on direct provider writes). The row is left unbounded here and gets
+     * re-trimmed on the next agent run's store; since confirmations are terminal, the drift is at most
+     * two messages, so we don't re-implement the windowing (doing so risks dropping the system prompt).
+     */
+    private suspend fun record(conversationId: UUID, userMessage: String, reply: String) {
+        val key = conversationId.toString()
+        val history = chatHistory.load(key)
+        chatHistory.store(
+            key,
+            history +
+                Message.User(userMessage, RequestMetaInfo.Empty) +
+                Message.Assistant(reply, ResponseMetaInfo.Empty),
+        )
     }
 
     private fun systemPrompt(accountId: Long): String =
@@ -231,4 +308,9 @@ class AgentService(
     private fun resolve(definitions: LLModelDefinitions, modelId: String): LLModel =
         definitions.modelsById()[modelId]
             ?: error("Unknown Koog model id '$modelId'. Known ids: ${definitions.modelsById().keys.sorted()}")
+
+    private companion object {
+        /** Sliding window of messages ChatMemory keeps per conversation. */
+        const val MEMORY_WINDOW = 50
+    }
 }
