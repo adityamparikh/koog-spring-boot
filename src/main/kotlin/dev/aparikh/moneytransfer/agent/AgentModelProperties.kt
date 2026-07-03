@@ -12,8 +12,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *
  * @property anthropicModel everyday Anthropic model (feature.md's "Sonnet 5" → nearest
  *   available Koog id `claude-sonnet-4-6`).
- * @property anthropicComplexModel Anthropic model for complex turns (feature.md's "Opus 4.8"
- *   → `claude-opus-4-7`). Wired now; first used by step 4's custom strategy.
  * @property openAiFallbackModel OpenAI model used as the cross-provider error-fallback
  *   (feature.md's `gpt-5.4`, an exact Koog id match).
  * @property conversationTtlSeconds how long durable conversation state (Koog's `chat_history` and
@@ -25,7 +23,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 @ConfigurationProperties(prefix = "app.agent")
 data class AgentModelProperties(
     val anthropicModel: String = "claude-sonnet-4-6",
-    val anthropicComplexModel: String = "claude-opus-4-7",
     val openAiFallbackModel: String = "gpt-5.4",
     val conversationTtlSeconds: Long = 86_400,
 )
