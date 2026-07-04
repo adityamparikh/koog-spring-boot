@@ -7,3 +7,14 @@ services:
       POSTGRES_PASSWORD: moneytransfer
     ports:
       - '5432:5432'
+
+  # Observability (step 6): Grafana's all-in-one LGTM stack — Loki, Grafana, Tempo, Mimir — plus a
+  # built-in OpenTelemetry Collector. Spring Boot Docker Compose brings it up on `bootRun`; the app
+  # exports agent spans over OTLP to :4317, viewable as traces in Grafana → Tempo at http://localhost:3000.
+  # Pinned tag (never `latest`) for reproducibility; bump deliberately.
+  otel-lgtm:
+    image: 'grafana/otel-lgtm:0.11.4'
+    ports:
+      - '3000:3000'   # Grafana UI
+      - '4317:4317'   # OTLP gRPC
+      - '4318:4318'   # OTLP HTTP

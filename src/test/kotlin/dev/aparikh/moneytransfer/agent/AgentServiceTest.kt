@@ -40,7 +40,8 @@ class AgentServiceTest {
     private val transferService = mockk<TransferService>(relaxed = true)
     private val interpreter = mockk<AffirmationInterpreter>()
     private val service = AgentService(
-        executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService, interpreter, AgentModelProperties(),
+        executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService, interpreter,
+        ObservabilityProperties(), properties = AgentModelProperties(),
     )
 
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")
