@@ -271,13 +271,16 @@ class AgentService(
             //    for a future custom strategy graph, per node/subgraph — the feature hooks the
             //    pipeline, not the strategy) → Tempo, plus GenAI metrics (token usage, latency,
             //    tool-call counts) → Mimir, exported via OTLP to grafana/otel-lgtm. Installed only when
-            //    observability is enabled; the app-scoped exporters are wrapped so Koog's per-run SDK
-            //    teardown (closeSdks) can't shut them down. https://docs.koog.ai/opentelemetry-support/
+            //    observability is enabled. https://docs.koog.ai/opentelemetry-support/
+            //    Do NOT setVerbose(true): this is a money app; verbose emits prompt/response content
+            //    (amounts, contact names, balances) unmasked into the spans. Known limitation: Koog
+            //    builds an OTel SDK per install and we build an agent per request — see
+            //    docs/notes/observability.md ("per-request SDK") for the leak and the step-7 fix.
             if (spanExporter != null || metricExporter != null) {
                 install(OpenTelemetry) {
                     setServiceInfo(observability.serviceName, observability.serviceVersion)
-                    spanExporter?.let { addSpanExporter(NonClosingSpanExporter(it)) }
-                    metricExporter?.let { addMetricExporter(NonClosingMetricExporter(it)) }
+                    spanExporter?.let { addSpanExporter(it) }
+                    metricExporter?.let { addMetricExporter(it) }
                 }
             }
         }

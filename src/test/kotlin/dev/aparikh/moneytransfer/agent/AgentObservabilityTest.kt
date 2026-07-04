@@ -16,10 +16,10 @@ import org.junit.jupiter.api.Test
  * spans for an agent run and exports them through the provided `SpanExporter`. Uses an in-memory
  * exporter so no OTLP endpoint / LGTM stack is required.
  *
- * The exporter is wrapped in [NonClosingSpanExporter] (the same wrapper production uses) because
- * Koog closes its per-run SDK when the agent finishes (`closeSdks` → `shutdown`), and
- * `InMemorySpanExporter.shutdown()` *clears* its buffer — the wrapper's no-op shutdown preserves the
- * captured spans while still delegating the flush that delivers them.
+ * `shutdownOnAgentClose` is left at its default (`false`), so Koog never shuts the run's SDK down —
+ * the in-memory buffer isn't cleared and spans reach it via the batch processor's timer, which is why
+ * we poll below. (This is also the behaviour documented as the "per-request SDK" limitation in
+ * docs/notes/observability.md.)
  */
 class AgentObservabilityTest {
 
@@ -35,9 +35,7 @@ class AgentObservabilityTest {
         ) {
             install(OpenTelemetry) {
                 setServiceInfo("money-transfer-agent-test", "0.0.1")
-                // NonClosingSpanExporter keeps Koog's per-run SDK teardown from clearing the buffer
-                // before we read it (InMemorySpanExporter.shutdown() clears; the wrapper no-ops it).
-                addSpanExporter(NonClosingSpanExporter(exporter))
+                addSpanExporter(exporter)
             }
         }
 

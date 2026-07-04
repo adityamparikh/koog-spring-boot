@@ -20,9 +20,9 @@ import org.springframework.context.annotation.Configuration
 class AgentObservabilityConfig {
 
     /**
-     * The OTLP gRPC exporter → `grafana/otel-lgtm` collector. `destroyMethod = "shutdown"` closes it
-     * once on application shutdown; per-run agent teardown can't close it because it is handed to Koog
-     * wrapped in a [NonClosingSpanExporter].
+     * The OTLP gRPC exporter → `grafana/otel-lgtm` collector, app-scoped and closed once on
+     * application shutdown (`destroyMethod = "shutdown"`). Koog never shuts it down per run because
+     * `shutdownOnAgentClose` is left at its default `false` (see docs/notes/observability.md).
      */
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnProperty(prefix = "app.observability", name = ["enabled"], havingValue = "true")
@@ -34,8 +34,7 @@ class AgentObservabilityConfig {
     /**
      * The OTLP gRPC metric exporter → `grafana/otel-lgtm` (Mimir). Koog emits GenAI-convention
      * metrics — token usage (`gen_ai.client.token.usage`), operation latency, tool-call counts.
-     * Closed on app shutdown; handed to Koog wrapped in a [NonClosingMetricExporter] so a per-run
-     * meter-provider teardown can't shut down this app-scoped exporter.
+     * App-scoped, closed once on app shutdown (`destroyMethod = "shutdown"`).
      */
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnProperty(prefix = "app.observability", name = ["enabled"], havingValue = "true")
