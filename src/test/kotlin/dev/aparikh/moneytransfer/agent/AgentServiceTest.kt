@@ -3,7 +3,6 @@ package dev.aparikh.moneytransfer.agent
 import ai.koog.agents.chatMemory.feature.InMemoryChatHistoryProvider
 import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.contact.ContactService
@@ -32,7 +31,7 @@ import java.util.UUID
 class AgentServiceTest {
 
     private val executor = getMockExecutor { mockLLMAnswer("hi").asDefaultResponse }
-    private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository(), jacksonObjectMapper())
+    private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository())
     private val chatHistory = InMemoryChatHistoryProvider()
     private val checkpointStorage = InMemoryPersistenceStorageProvider()
     private val contactService = mockk<ContactService>()

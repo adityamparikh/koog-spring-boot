@@ -15,8 +15,8 @@ data class Account(
     @Id
     val id: Long? = null,
     val firstName: String,
+    val balance: BigDecimal,
     val lastName: String? = null,
     val phoneNumber: String? = null,
     val currency: String = "USD",
-    val balance: BigDecimal,
 )

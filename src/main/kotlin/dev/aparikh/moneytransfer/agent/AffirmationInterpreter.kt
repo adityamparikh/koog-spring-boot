@@ -31,11 +31,11 @@ class AffirmationInterpreter {
 
     private companion object {
         // \b word boundaries so "no" doesn't match "now"/"nothing"; multi-word phrases matched literally.
-        private val AFFIRM = Regex(
+        val AFFIRM = Regex(
             "\\b(yes|yeah|yep|yup|sure|ok|okay|confirm(ed)?|approved?|proceed|absolutely|" +
                 "definitely|affirmative|go ahead|go for it|do it|send( it)?|sounds good|please do)\\b",
         )
-        private val DENY = Regex(
+        val DENY = Regex(
             "\\b(no|nope|nah|cancel|stop|abort|decline|do ?n[o']t|negative|never ?mind|forget it|leave it)\\b",
         )
     }

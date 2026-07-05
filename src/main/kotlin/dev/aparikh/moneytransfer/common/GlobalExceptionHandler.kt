@@ -13,32 +13,24 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 class GlobalExceptionHandler {
 
     @ExceptionHandler(UnknownAccountException::class)
-    fun handleUnknownAccount(ex: UnknownAccountException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.message ?: "Account not found")
-            .apply { title = "Account not found" }
+    fun handleUnknownAccount(ex: UnknownAccountException) = problem(HttpStatus.NOT_FOUND, "Account not found", ex)
 
     @ExceptionHandler(InsufficientFundsException::class)
-    fun handleInsufficientFunds(ex: InsufficientFundsException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, ex.message ?: "Insufficient funds")
-            .apply { title = "Insufficient funds" }
+    fun handleInsufficientFunds(ex: InsufficientFundsException) = problem(HttpStatus.UNPROCESSABLE_ENTITY, "Insufficient funds", ex)
 
     @ExceptionHandler(UnknownContactException::class)
-    fun handleUnknownContact(ex: UnknownContactException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.message ?: "Contact not found")
-            .apply { title = "Contact not found" }
+    fun handleUnknownContact(ex: UnknownContactException) = problem(HttpStatus.NOT_FOUND, "Contact not found", ex)
 
     @ExceptionHandler(NoPendingInteractionException::class)
-    fun handleNoPendingInteraction(ex: NoPendingInteractionException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.message ?: "Nothing to reply to")
-            .apply { title = "No pending interaction" }
+    fun handleNoPendingInteraction(ex: NoPendingInteractionException) = problem(HttpStatus.CONFLICT, "No pending interaction", ex)
 
     @ExceptionHandler(InvalidAmountException::class)
-    fun handleInvalidAmount(ex: InvalidAmountException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.message ?: "Invalid amount")
-            .apply { title = "Invalid amount" }
+    fun handleInvalidAmount(ex: InvalidAmountException) = problem(HttpStatus.BAD_REQUEST, "Invalid amount", ex)
 
     @ExceptionHandler(AgentUnavailableException::class)
-    fun handleAgentUnavailable(ex: AgentUnavailableException): ProblemDetail =
-        ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.message ?: "Assistant unavailable")
-            .apply { title = "Assistant unavailable" }
+    fun handleAgentUnavailable(ex: AgentUnavailableException) = problem(HttpStatus.SERVICE_UNAVAILABLE, "Assistant unavailable", ex)
+
+    /** RFC 7807 response: [title] names the error; the exception message is the detail (falling back to [title]). */
+    private fun problem(status: HttpStatus, title: String, ex: Exception): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(status, ex.message ?: title).apply { this.title = title }
 }
