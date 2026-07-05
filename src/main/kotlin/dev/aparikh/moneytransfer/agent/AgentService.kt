@@ -5,8 +5,11 @@ import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
+import ai.koog.agents.features.opentelemetry.feature.OpenTelemetry
 import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
+import io.opentelemetry.sdk.metrics.export.MetricExporter
+import io.opentelemetry.sdk.trace.export.SpanExporter
 import ai.koog.prompt.executor.clients.LLModelDefinitions
 import ai.koog.prompt.executor.clients.anthropic.AnthropicModels
 import ai.koog.prompt.executor.clients.modelsById
@@ -82,6 +85,11 @@ class AgentService(
     private val accountService: AccountService,
     private val transferService: TransferService,
     private val affirmationInterpreter: AffirmationInterpreter,
+    private val observability: ObservabilityProperties,
+    // Present only when app.observability.enabled=true (the beans are @ConditionalOnProperty); null
+    // otherwise, so with observability off the OpenTelemetry feature is simply never installed.
+    private val spanExporter: SpanExporter? = null,
+    private val metricExporter: MetricExporter? = null,
     properties: AgentModelProperties,
 ) {
 
@@ -258,9 +266,26 @@ class AgentService(
                 storage = checkpointStorage
                 enableAutomaticPersistence = true
             }
+
+            // 7. Koog OpenTelemetry (step 6): emits a span per agent run / LLM call / tool call (and,
+            //    for a future custom strategy graph, per node/subgraph — the feature hooks the
+            //    pipeline, not the strategy) → Tempo, plus GenAI metrics (token usage, latency,
+            //    tool-call counts) → Mimir, exported via OTLP to grafana/otel-lgtm. Installed only when
+            //    observability is enabled. https://docs.koog.ai/opentelemetry-support/
+            //    Do NOT setVerbose(true): this is a money app; verbose emits prompt/response content
+            //    (amounts, contact names, balances) unmasked into the spans. Known limitation: Koog
+            //    builds an OTel SDK per install and we build an agent per request — see
+            //    docs/notes/observability.md ("per-request SDK") for the leak and the step-7 fix.
+            if (spanExporter != null || metricExporter != null) {
+                install(OpenTelemetry) {
+                    setServiceInfo(observability.serviceName, observability.serviceVersion)
+                    spanExporter?.let { addSpanExporter(it) }
+                    metricExporter?.let { addMetricExporter(it) }
+                }
+            }
         }
 
-        // 7. Run the turn. The conversationId is the run's sessionId — ChatMemory and Persistence
+        // 8. Run the turn. The conversationId is the run's sessionId — ChatMemory and Persistence
         //    both scope to it. singleRunStrategy drives LLM↔tool iterations internally; `run`
         //    suspends until the agent produces its final text answer, which we return.
         return agent.run(input, conversationId.toString())

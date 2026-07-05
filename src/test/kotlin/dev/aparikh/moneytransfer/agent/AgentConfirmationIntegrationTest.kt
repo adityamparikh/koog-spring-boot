@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.test.context.ActiveProfiles
 import org.springframework.transaction.annotation.Transactional
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
@@ -30,6 +31,7 @@ import java.util.UUID
  * controller wiring itself is covered by `AgentControllerTest` (`@WebMvcTest`).
  */
 @SpringBootTest
+@ActiveProfiles("test")
 @Transactional
 @Testcontainers(disabledWithoutDocker = true)
 class AgentConfirmationIntegrationTest {

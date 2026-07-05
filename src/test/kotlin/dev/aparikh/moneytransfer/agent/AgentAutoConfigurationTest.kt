@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.context.ApplicationContext
+import org.springframework.test.context.ActiveProfiles
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
@@ -23,6 +24,7 @@ import org.testcontainers.utility.DockerImageName
         "ai.koog.openai.api-key=test-openai-key",
     ],
 )
+@ActiveProfiles("test")
 @Testcontainers(disabledWithoutDocker = true)
 class AgentAutoConfigurationTest {
 

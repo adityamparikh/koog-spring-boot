@@ -43,6 +43,12 @@ dependencies {
     implementation(libs.koog.agents.features.chat.history.jdbc)
     implementation(libs.koog.agents.features.persistence.jdbc)
 
+    // Observability (step 6): OTLP exporter for shipping Koog agent spans to grafana/otel-lgtm.
+    // The OTel BOM (aligned to Koog's OTel SDK version) governs all opentelemetry-* versions.
+    implementation(platform(libs.opentelemetry.bom))
+    implementation(libs.opentelemetry.exporter.otlp)
+    testImplementation(libs.opentelemetry.sdk.testing)
+
     // Database driver + Flyway migrations.
     runtimeOnly(libs.postgresql)
     implementation(libs.flyway.core)

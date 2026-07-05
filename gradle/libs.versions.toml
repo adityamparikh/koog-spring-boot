@@ -10,6 +10,10 @@ mockk = "1.14.11"
 # versioned independently and is still -beta even though core Koog is GA.
 koog = "1.0.0"
 koogSpringBootStarter = "1.0.0-beta"
+# OpenTelemetry (step 6) — aligned to the version Koog 1.0.0's OTel feature is built against
+# (koog gradle.properties: opentelemetry-jvm = 1.61.0), so our OTLP exporter matches Koog's
+# transitive OTel SDK. Imported as a platform/BOM; member artifacts inherit this version.
+opentelemetry = "1.61.0"
 
 [libraries]
 # Spring Boot starters (versions managed by the Spring Boot BOM / plugin).
@@ -54,6 +58,13 @@ koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
 # The ChatMemory & Persistence *features* themselves ride in transitively via koog-agents.
 koog-agents-features-chat-history-jdbc = { module = "ai.koog:agents-features-chat-history-jdbc", version.ref = "koog" }
 koog-agents-features-persistence-jdbc = { module = "ai.koog:agents-features-persistence-jdbc", version.ref = "koog" }
+
+# OpenTelemetry (step 6). The Koog OpenTelemetry *feature* is transitive via koog-agents; we only
+# add the OTLP exporter (to ship agent spans to grafana/otel-lgtm) and the SDK-testing exporter
+# (InMemorySpanExporter) for the wiring test. Versions come from the OTel BOM (platform), below.
+opentelemetry-bom = { module = "io.opentelemetry:opentelemetry-bom", version.ref = "opentelemetry" }
+opentelemetry-exporter-otlp = { module = "io.opentelemetry:opentelemetry-exporter-otlp" }
+opentelemetry-sdk-testing = { module = "io.opentelemetry:opentelemetry-sdk-testing" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

@@ -1,16 +1,15 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step5-persistence`) is step 5:
-conversation state becomes durable — transcripts, run checkpoints, and paused confirmations
-survive an app restart — using Koog's built-in `ChatMemory` and `Persistence` features backed by
-Postgres.**
+branch that adds one capability (see `feature.md`). **This branch (`step6-observability`) is step 6:
+the agent is traced with Koog's `OpenTelemetry` feature, exporting a span per run / LLM call / tool
+call over OTLP to Grafana's LGTM stack (run locally via docker-compose).**
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
 > covers **step 1** (money-transfer REST), **step 2** (AI agent chat), **step 3** (agent tools &
-> human-in-the-loop), **step 4** (balance & overdraft protection), and **step 5** (durable
-> persistence).
+> human-in-the-loop), **step 4** (balance & overdraft protection), **step 5** (durable
+> persistence), and **step 6** (OpenTelemetry observability).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -284,7 +283,36 @@ curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
 # → {"type":"ANSWER","reply":"Done — sent $50 to Alice Smith.","conversationId":"<id>"}
 ```
 
+## Step 6 — Observability (OpenTelemetry → Grafana LGTM)
+Step 6 instruments the agent with **Koog's `OpenTelemetry` feature**: every agent run, LLM call, and
+tool call becomes a **span** (→ Tempo), and Koog also emits GenAI **metrics** — token usage, operation
+latency, tool-call counts (→ Mimir) — all exported over **OTLP** to Grafana's all-in-one **LGTM**
+stack (`grafana/otel-lgtm`). Because the feature hooks the Koog *pipeline* (not the strategy), a
+future custom strategy graph will emit per-node/subgraph spans automatically — no rework.
+
+Observability is **additive**: it's controlled by `app.observability.enabled` (on for local `bootRun`,
+off in tests), so with no OTLP endpoint the app and the test suite run exactly as before. The
+app-scoped OTLP exporter is wrapped (`NonClosingSpanExporter`) so Koog's per-run SDK teardown can't
+shut it down between requests.
+
+```bash
+# 1) Run the app. Spring Boot Docker Compose starts Postgres AND the LGTM stack (compose.yaml).
+./gradlew bootRun
+
+# 2) Send a chat turn (see step 3/4) so the agent runs and emits spans.
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "who are my contacts?"}'
+
+# 3) Open Grafana → Explore → Tempo and search by service name "money-transfer-agent".
+#    You'll see a trace per run with child spans for each LLM call and tool call.
+open http://localhost:3000
+```
+
+> Point at a different backend by changing `app.observability.otlp-endpoint`. Koog also ships
+> one-line adapters for **Langfuse** and **W&B Weave** (`addLangfuseExporter`/`addWeaveExporter`) if
+> you prefer an LLM-native trace view over Grafana.
+
 ## What's next
-Later branches add: OpenTelemetry (step 6), transfer rollback (step 7), history compression
-(step 8), fuller tests (step 9), and a Spring AI refactor (step 10). See `feature.md` for the full
-roadmap.
+Later branches add: transfer rollback (step 7), history compression (step 8), fuller tests (step 9),
+and a Spring AI refactor (step 10). See `feature.md` for the full roadmap.
