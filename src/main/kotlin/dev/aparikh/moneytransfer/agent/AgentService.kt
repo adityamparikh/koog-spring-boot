@@ -7,6 +7,7 @@ import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.agents.features.opentelemetry.feature.OpenTelemetry
 import ai.koog.agents.snapshot.feature.Persistence
+import ai.koog.agents.snapshot.feature.isTombstone
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import io.opentelemetry.sdk.metrics.export.MetricExporter
 import io.opentelemetry.sdk.trace.export.SpanExporter
@@ -188,7 +189,28 @@ class AgentService(
     /** A read-only snapshot of a conversation for the status endpoint (FR-14). */
     suspend fun status(conversationId: UUID): ConversationStatusResponse {
         val turns = chatHistory.load(conversationId.toString()).count { it is Message.User }
-        return ConversationStatusResponse(conversationId, turns, pending.get(conversationId)?.awaiting)
+        return ConversationStatusResponse(
+            conversationId,
+            turns,
+            pending.get(conversationId)?.awaiting,
+            lastRunState(conversationId),
+        )
+    }
+
+    /**
+     * Derives how the conversation's most recent agent run ended from its latest `Persistence`
+     * checkpoint. Koog writes a terminal **tombstone** checkpoint on clean completion, so:
+     * no checkpoints → no run yet; tombstone on top → completed; anything else on top → the run
+     * died mid-flight and never tombstoned. (Detection uses Koog's [isTombstone] — the tombstone
+     * is flagged in the checkpoint's `properties`, not by node path.)
+     */
+    private suspend fun lastRunState(conversationId: UUID): LastRunState {
+        val latest = checkpointStorage.getLatestCheckpoint(conversationId.toString())
+        return when {
+            latest == null -> LastRunState.NONE
+            latest.isTombstone() -> LastRunState.COMPLETED
+            else -> LastRunState.INTERRUPTED
+        }
     }
 
     private suspend fun resolveConfirmation(

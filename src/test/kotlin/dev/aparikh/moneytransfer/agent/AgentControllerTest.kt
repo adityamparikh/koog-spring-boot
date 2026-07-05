@@ -111,9 +111,9 @@ class AgentControllerTest {
     }
 
     @Test
-    fun `status reports turn count and what the conversation awaits`() {
+    fun `status reports turn count, what the conversation awaits, and the last run state`() {
         coEvery { agentService.status(conversationId) } returns
-            ConversationStatusResponse(conversationId, turns = 3, awaiting = InteractionType.CONFIRMATION)
+            ConversationStatusResponse(conversationId, turns = 3, awaiting = InteractionType.CONFIRMATION, lastRun = LastRunState.COMPLETED)
 
         val async = mockMvc.perform(get("/api/v1/agent/$conversationId/status"))
             .andExpect(request().asyncStarted()).andReturn()
@@ -122,5 +122,6 @@ class AgentControllerTest {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.turns").value(3))
             .andExpect(jsonPath("$.awaiting").value("CONFIRMATION"))
+            .andExpect(jsonPath("$.lastRun").value("COMPLETED"))
     }
 }

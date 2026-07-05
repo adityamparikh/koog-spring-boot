@@ -1,8 +1,12 @@
 package dev.aparikh.moneytransfer.agent
 
 import ai.koog.agents.chatMemory.feature.InMemoryChatHistoryProvider
+import ai.koog.agents.snapshot.feature.AgentCheckpointData
+import ai.koog.agents.snapshot.feature.GraphCheckpointProperties
+import ai.koog.agents.snapshot.feature.tombstoneCheckpoint
 import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
+import kotlin.time.Clock
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.common.TransferNotCancellableException
@@ -156,6 +160,45 @@ class AgentServiceTest {
         assertEquals(InteractionType.ANSWER, result.type)
         verify(exactly = 0) { transferService.cancel(any(), any()) }
         assertNull(pending.get(conversationId))
+    }
+
+    // --- status: last-run state from the Persistence checkpoint tombstone ---
+
+    @Test
+    fun `status reports NONE for a conversation with no agent runs`() {
+        val result = runBlocking { service.status(UUID.randomUUID()) }
+
+        assertEquals(LastRunState.NONE, result.lastRun)
+    }
+
+    @Test
+    fun `status reports COMPLETED when the latest checkpoint is the tombstone`() {
+        runBlocking {
+            checkpointStorage.saveCheckpoint(
+                conversationId.toString(),
+                tombstoneCheckpoint(createdAt = Clock.System.now(), version = 1),
+            )
+
+            assertEquals(LastRunState.COMPLETED, service.status(conversationId).lastRun)
+        }
+    }
+
+    @Test
+    fun `status reports INTERRUPTED when a mid-run checkpoint was never tombstoned`() {
+        runBlocking {
+            checkpointStorage.saveCheckpoint(
+                conversationId.toString(),
+                AgentCheckpointData(
+                    checkpointId = "cp-mid-run",
+                    createdAt = Clock.System.now(),
+                    messageHistory = emptyList(),
+                    version = 1,
+                    graphProperties = GraphCheckpointProperties(nodePath = "nodeCallLLM"),
+                ),
+            )
+
+            assertEquals(LastRunState.INTERRUPTED, service.status(conversationId).lastRun)
+        }
     }
 
     @Test
