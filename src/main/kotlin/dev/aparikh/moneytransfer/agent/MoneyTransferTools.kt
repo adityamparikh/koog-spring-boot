@@ -4,6 +4,7 @@ import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import dev.aparikh.moneytransfer.account.AccountService
+import dev.aparikh.moneytransfer.common.UnknownContactException
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferService
 import java.math.BigDecimal
@@ -131,7 +132,15 @@ class MoneyTransferTools(
         }
         if (requested.signum() <= 0) return "The amount must be greater than zero."
 
-        val contact = contactService.getContact(accountId, recipientContactId)
+        // A bad contactId is the model's mistake, not a provider failure: report it as a tool
+        // result so the LLM corrects itself, instead of throwing (which would fail the run and
+        // burn a pointless cross-provider fallback in AgentService).
+        val contact = try {
+            contactService.getContact(accountId, recipientContactId)
+        } catch (_: UnknownContactException) {
+            return "No contact with contactId $recipientContactId exists for this user. " +
+                "Use getContacts or chooseRecipient to find the right contactId."
+        }
         val available = accountService.getBalance(accountId)
 
         // Overdraft protection: don't stage an over-balance transfer. Let the USER choose the

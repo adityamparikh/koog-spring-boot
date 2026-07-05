@@ -124,6 +124,17 @@ class MoneyTransferToolsTest {
         assertNull(pending.get(conversationId))
     }
 
+    @Test
+    fun `prepareTransfer reports an unknown contactId as a tool result instead of failing the run`() {
+        every { contactService.getContact(1, 99) } throws dev.aparikh.moneytransfer.common.UnknownContactException(99)
+
+        val out = tools.prepareTransfer(recipientContactId = 99, amount = "50.00", purpose = null)
+
+        assertTrue(out.contains("99"), "should name the bad contactId")
+        assertTrue(out.contains("getContacts"), "should steer the model to a valid lookup")
+        assertNull(pending.get(conversationId), "nothing staged for a nonexistent contact")
+    }
+
     // --- step 7: settlement status + undo tools ---
 
     private fun transfer(id: Long, sender: Long, recipient: Long, status: TransferStatus) = Transfer(
