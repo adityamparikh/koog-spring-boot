@@ -1,7 +1,10 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.tools
 
 import dev.aparikh.moneytransfer.account.Account
 import dev.aparikh.moneytransfer.account.AccountService
+import dev.aparikh.moneytransfer.agent.hitl.InMemoryPendingInteractionRepository
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.contact.ResolvedContact
 import dev.aparikh.moneytransfer.transfer.Transfer

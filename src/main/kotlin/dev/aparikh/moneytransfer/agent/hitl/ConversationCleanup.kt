@@ -1,5 +1,6 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.hitl
 
+import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component

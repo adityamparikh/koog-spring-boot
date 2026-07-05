@@ -1,9 +1,13 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.tools
 
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import dev.aparikh.moneytransfer.account.AccountService
+import dev.aparikh.moneytransfer.agent.hitl.ContactCandidate
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
+import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
 import dev.aparikh.moneytransfer.common.UnknownContactException
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferService

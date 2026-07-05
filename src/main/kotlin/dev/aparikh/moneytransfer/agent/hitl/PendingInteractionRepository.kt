@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.hitl
 
 import org.springframework.data.annotation.Id
 import org.springframework.data.jdbc.repository.query.Modifying

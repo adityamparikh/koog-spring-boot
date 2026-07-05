@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.config
 
 import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
 import ai.koog.agents.features.chathistory.jdbc.PostgresJdbcChatHistoryProvider

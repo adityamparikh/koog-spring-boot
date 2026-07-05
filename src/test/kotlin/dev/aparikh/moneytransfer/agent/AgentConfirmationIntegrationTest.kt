@@ -1,8 +1,13 @@
 package dev.aparikh.moneytransfer.agent
 
 import dev.aparikh.moneytransfer.account.AccountRepository
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
+import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
 import dev.aparikh.moneytransfer.transfer.TransferService
 import dev.aparikh.moneytransfer.transfer.TransferStatus
+import java.math.BigDecimal
+import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -17,8 +22,6 @@ import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
-import java.math.BigDecimal
-import java.util.UUID
 
 /**
  * Integration test for the confirm-gate money path against **real PostgreSQL** (Testcontainers +

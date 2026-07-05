@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
 

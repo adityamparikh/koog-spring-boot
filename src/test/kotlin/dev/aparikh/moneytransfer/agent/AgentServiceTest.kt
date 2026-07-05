@@ -6,7 +6,14 @@ import ai.koog.agents.snapshot.feature.GraphCheckpointProperties
 import ai.koog.agents.snapshot.feature.tombstoneCheckpoint
 import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
-import kotlin.time.Clock
+import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
+import dev.aparikh.moneytransfer.agent.config.ObservabilityProperties
+import dev.aparikh.moneytransfer.agent.hitl.Affirmation
+import dev.aparikh.moneytransfer.agent.hitl.AffirmationInterpreter
+import dev.aparikh.moneytransfer.agent.hitl.InMemoryPendingInteractionRepository
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
+import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.common.TransferNotCancellableException
@@ -17,6 +24,9 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.math.BigDecimal
+import java.util.UUID
+import kotlin.time.Clock
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -24,8 +34,6 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
-import java.math.BigDecimal
-import java.util.UUID
 
 /**
  * Tests the deterministic, app-side parts of [AgentService] — the confirm-gate that guarantees

@@ -5,6 +5,16 @@ import ai.koog.agents.features.chathistory.jdbc.PostgresJdbcChatHistoryProvider
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import ai.koog.prompt.message.ResponseMetaInfo
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionRepository
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
+import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
+import java.math.BigDecimal
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import javax.sql.DataSource
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -19,12 +29,6 @@ import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
-import java.math.BigDecimal
-import java.time.Instant
-import java.util.UUID
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
-import javax.sql.DataSource
 
 /**
  * Proves the step-5 Koog-native persistence against **real PostgreSQL** (Testcontainers + Flyway):

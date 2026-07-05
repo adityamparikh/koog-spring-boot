@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.hitl
 
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonSubTypes

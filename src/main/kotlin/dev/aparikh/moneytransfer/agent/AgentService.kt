@@ -20,6 +20,14 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import ai.koog.prompt.message.ResponseMetaInfo
+import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
+import dev.aparikh.moneytransfer.agent.config.ObservabilityProperties
+import dev.aparikh.moneytransfer.agent.hitl.Affirmation
+import dev.aparikh.moneytransfer.agent.hitl.AffirmationInterpreter
+import dev.aparikh.moneytransfer.agent.hitl.ContactCandidate
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
+import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
+import dev.aparikh.moneytransfer.agent.tools.MoneyTransferTools
 import dev.aparikh.moneytransfer.common.AgentUnavailableException
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException

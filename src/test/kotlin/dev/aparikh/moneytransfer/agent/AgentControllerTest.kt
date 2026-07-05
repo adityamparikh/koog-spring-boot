@@ -1,10 +1,12 @@
 package dev.aparikh.moneytransfer.agent
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import dev.aparikh.moneytransfer.agent.hitl.ContactCandidate
 import dev.aparikh.moneytransfer.common.GlobalExceptionHandler
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import io.mockk.coEvery
 import io.mockk.mockk
+import java.util.UUID
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
@@ -20,7 +22,6 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.request
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import java.util.UUID
 
 /**
  * Web-layer test for [AgentController] with a mocked [AgentService] — verifies HTTP wiring and
