@@ -9,13 +9,13 @@ import dev.aparikh.moneytransfer.transfer.TransferService
 import dev.aparikh.moneytransfer.transfer.TransferStatus
 import io.mockk.every
 import io.mockk.mockk
+import java.math.BigDecimal
+import java.time.Instant
+import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.math.BigDecimal
-import java.time.Instant
-import java.util.UUID
 
 /**
  * Direct unit tests for the [MoneyTransferTools] `ToolSet` — the tool methods are plain Kotlin
@@ -39,7 +39,7 @@ class MoneyTransferToolsTest {
         ResolvedContact(contactId = contactId, contactAccountId = accountId, displayName = name, nickname = null, phoneNumber = phone)
 
     @Test
-    fun `getContacts lists contacts with ids`() {
+    fun `getContacts returns typed contact views with ids`() {
         every { contactService.getContacts(1) } returns listOf(
             contact(10, 2, "Alice Smith", "+3510"),
             contact(11, 3, "Bob Johnson"),
@@ -47,8 +47,10 @@ class MoneyTransferToolsTest {
 
         val out = tools.getContacts()
 
-        assertTrue(out.contains("10 | Alice Smith"))
-        assertTrue(out.contains("11 | Bob Johnson"))
+        assertEquals(listOf(10L, 11L), out.map { it.contactId })
+        assertEquals("Alice Smith", out[0].displayName)
+        assertEquals("+3510", out[0].phoneNumber)
+        assertNull(out[1].phoneNumber)
     }
 
     @Test
@@ -80,7 +82,7 @@ class MoneyTransferToolsTest {
     fun `getBalance returns the account balance`() {
         every { accountService.getBalance(1) } returns BigDecimal("1000.00")
 
-        assertTrue(tools.getBalance().contains("1000.00"))
+        assertEquals(BalanceView(availableUsd = "1000.00"), tools.getBalance())
     }
 
     @Test
@@ -143,7 +145,7 @@ class MoneyTransferToolsTest {
     )
 
     @Test
-    fun `getRecentTransfers reports direction, status, and settle time`() {
+    fun `getRecentTransfers reports direction, counterparty, status, and settle time`() {
         every { transferService.recentTransfersFor(1, 10) } returns listOf(
             transfer(42, sender = 1, recipient = 5, status = TransferStatus.PENDING),
             transfer(41, sender = 3, recipient = 1, status = TransferStatus.SETTLED),
@@ -151,10 +153,17 @@ class MoneyTransferToolsTest {
 
         val out = tools.getRecentTransfers()
 
-        assertTrue(out.contains("42 | sent to account 5"), "outgoing transfer should read as sent")
-        assertTrue(out.contains("PENDING"))
-        assertTrue(out.contains("41 | received from account 3"), "incoming transfer should read as received")
-        assertTrue(out.contains("SETTLED"))
+        val outgoing = out.single { it.transferId == 42L }
+        assertEquals(TransferDirection.SENT, outgoing.direction, "outgoing transfer should read as sent")
+        assertEquals(5L, outgoing.counterpartyAccountId, "SENT counterparty is the recipient")
+        assertEquals(TransferStatus.PENDING, outgoing.status)
+        assertEquals("50.00", outgoing.amountUsd)
+        assertTrue(outgoing.settlesAtUtc!!.endsWith("UTC"), "settle time renders with an explicit zone")
+
+        val incoming = out.single { it.transferId == 41L }
+        assertEquals(TransferDirection.RECEIVED, incoming.direction, "incoming transfer should read as received")
+        assertEquals(3L, incoming.counterpartyAccountId, "RECEIVED counterparty is the sender")
+        assertEquals(TransferStatus.SETTLED, incoming.status)
     }
 
     @Test
@@ -171,6 +180,30 @@ class MoneyTransferToolsTest {
         assertEquals(42L, staged.transferId)
         assertTrue(staged.summary.contains("Daniel Craig"), "the summary should name the recipient")
         // Nothing is cancelled here — TransferService.cancel runs app-side after the user's "yes".
+    }
+
+    @Test
+    fun `tool result views serialize to JSON for the model`() {
+        // Koog encodes @Tool return values with kotlinx-serialization at call time, so a missing
+        // @Serializable (or a broken plugin setup) would crash the first live tool call — a
+        // failure the direct-call tests above can never see. Prove the views round-trip.
+        val json = kotlinx.serialization.json.Json.encodeToString(
+            listOf(
+                TransferView(
+                    transferId = 42, direction = TransferDirection.SENT, counterpartyAccountId = 5,
+                    amountUsd = "50.00", status = TransferStatus.PENDING,
+                    settlesAtUtc = "2026-07-05 12:00:00 UTC", purpose = "dinner",
+                ),
+            ),
+        )
+
+        assertTrue(json.contains("\"direction\":\"SENT\""), "enum should serialize by name: $json")
+        assertTrue(json.contains("\"amountUsd\":\"50.00\""), "money should stay a pre-rendered string: $json")
+
+        val contacts = kotlinx.serialization.json.Json.encodeToString(
+            listOf(ContactView(contactId = 10, displayName = "Alice Smith", nickname = null, phoneNumber = null)),
+        )
+        assertTrue(contacts.contains("\"contactId\":10"), "contact view should serialize: $contacts")
     }
 
     @Test

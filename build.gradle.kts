@@ -1,6 +1,9 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
+    // Typed tool results: Koog's reflection ToolSet serializes a @Tool method's return value to
+    // JSON for the LLM via kotlinx-serialization, so the agent-layer view DTOs need @Serializable.
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
 }

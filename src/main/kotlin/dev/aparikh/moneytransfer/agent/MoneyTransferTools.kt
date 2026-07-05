@@ -7,10 +7,54 @@ import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.common.UnknownContactException
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferService
+import dev.aparikh.moneytransfer.transfer.TransferStatus
+import kotlinx.serialization.Serializable
 import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+
+/**
+ * Typed tool results (the workshop's `getOrderHistory(): List<OrderDetails>` style): Koog
+ * serializes a `@Tool` method's return value to JSON via kotlinx-serialization, so the model
+ * receives structured fields instead of parsing pre-formatted strings.
+ *
+ * Money and timestamps are pre-rendered [String]s — `BigDecimal`/`java.time.Instant` have no
+ * kotlinx serializers, and "50.00" / an explicit-UTC timestamp are what the model should repeat
+ * to the user verbatim anyway.
+ */
+
+/** A saved contact as the model sees it; [contactId] is what `prepareTransfer` needs. */
+@Serializable
+data class ContactView(
+    val contactId: Long,
+    val displayName: String,
+    val nickname: String?,
+    val phoneNumber: String?,
+)
+
+/** The acting user's available balance, pre-rendered ("1000.00"). */
+@Serializable
+data class BalanceView(
+    val availableUsd: String,
+)
+
+/** Whether the acting user sent or received a transfer. */
+enum class TransferDirection { SENT, RECEIVED }
+
+/** One ledger row as the model sees it, from the acting user's perspective. */
+@Serializable
+data class TransferView(
+    val transferId: Long,
+    val direction: TransferDirection,
+    @property:LLMDescription("The other account in the transfer: recipient if SENT, sender if RECEIVED")
+    val counterpartyAccountId: Long,
+    val amountUsd: String,
+    val status: TransferStatus,
+    @property:LLMDescription("When the transfer settles/settled (UTC) — a PENDING transfer's undo deadline; null on old rows predating async settlement")
+    val settlesAtUtc: String?,
+    val purpose: String?,
+)
 
 /**
  * Koog **tools** the agent can call to act on the money-transfer domain.
@@ -40,30 +84,37 @@ class MoneyTransferTools(
     private val pending: PendingInteractionStore,
 ) : ToolSet {
 
-    // Koog tool anatomy (applies to all three methods below):
+    // Koog tool anatomy (applies to every method below):
     //  • @Tool marks the method as callable by the LLM (name defaults to the function name).
     //  • @LLMDescription on the method is the tool's description; on each parameter it describes
     //    that argument — together they become the JSON tool schema the model sees.
-    //  • The String return value is fed back to the model as the tool result.
+    //  • The return value is serialized to JSON as the tool result: the read tools return typed
+    //    views ([ContactView], [BalanceView], [TransferView]) the model can reason over field by
+    //    field; the staging tools return String INSTRUCTIONS ("ask the user to confirm") because
+    //    their result is conversational guidance, not data — the same split the workshop uses.
     // https://docs.koog.ai/tools-overview/
 
     /** Lists the user's contacts, each with the `contactId` needed by [prepareTransfer]. */
     @Tool
     @LLMDescription(
-        "List the current user's saved contacts. Returns one line per contact as " +
-            "'contactId | displayName | phone'. Use the contactId with prepareTransfer.",
+        "List the current user's saved contacts. Returns an empty list if there are none. " +
+            "Use the contactId with prepareTransfer.",
     )
-    fun getContacts(): String {
-        val contacts = contactService.getContacts(accountId)
-        if (contacts.isEmpty()) return "You have no saved contacts."
-        return contacts.joinToString("\n") { "${it.contactId} | ${it.displayName} | ${it.phoneNumber ?: "—"}" }
-    }
+    fun getContacts(): List<ContactView> =
+        contactService.getContacts(accountId).map {
+            ContactView(
+                contactId = it.contactId,
+                displayName = it.displayName,
+                nickname = it.nickname,
+                phoneNumber = it.phoneNumber,
+            )
+        }
 
     /** The acting user's current available balance (FR-11). */
     @Tool
     @LLMDescription("Get the current user's available balance, in USD.")
-    fun getBalance(): String =
-        "Your available balance is $${accountService.getBalance(accountId).toPlainString()}."
+    fun getBalance(): BalanceView =
+        BalanceView(availableUsd = accountService.getBalance(accountId).toPlainString())
 
     /**
      * Resolves a recipient by name/nickname. One match → returns it; ambiguous or unknown →
@@ -173,20 +224,23 @@ class MoneyTransferTools(
     /** The user's recent transfers, so the agent can answer "did it go through?" (FR-21). */
     @Tool
     @LLMDescription(
-        "List the current user's recent transfers (sent and received), newest first, one per " +
-            "line as 'transferId | direction | amount | status | settlesAt | purpose'. " +
-            "PENDING transfers have not yet reached the recipient and can still be undone; " +
-            "SETTLED ones are final.",
+        "List the current user's recent transfers (sent and received), newest first. Returns an " +
+            "empty list if there are none. PENDING transfers have not yet reached the recipient " +
+            "and can still be undone; SETTLED ones are final.",
     )
-    fun getRecentTransfers(): String {
-        val recent = transferService.recentTransfersFor(accountId, RECENT_TRANSFER_LIMIT)
-        if (recent.isEmpty()) return "You have no transfers yet."
-        return recent.joinToString("\n") { t ->
-            val direction = if (t.senderAccountId == accountId) "sent to account ${t.recipientAccountId}" else "received from account ${t.senderAccountId}"
-            val settles = t.settleAt?.let { TIME_FORMAT.format(it) } ?: "—"
-            "${t.id} | $direction | $${t.amount.toPlainString()} | ${t.status} | $settles | ${t.purpose ?: "—"}"
+    fun getRecentTransfers(): List<TransferView> =
+        transferService.recentTransfersFor(accountId, RECENT_TRANSFER_LIMIT).map { t ->
+            val sent = t.senderAccountId == accountId
+            TransferView(
+                transferId = requireNotNull(t.id),
+                direction = if (sent) TransferDirection.SENT else TransferDirection.RECEIVED,
+                counterpartyAccountId = if (sent) t.recipientAccountId else t.senderAccountId,
+                amountUsd = t.amount.toPlainString(),
+                status = t.status,
+                settlesAtUtc = t.settleAt?.let { TIME_FORMAT.format(it) },
+                purpose = t.purpose,
+            )
         }
-    }
 
     /**
      * **Stages** a cancellation of the user's most recent PENDING transfer — it does NOT cancel.
