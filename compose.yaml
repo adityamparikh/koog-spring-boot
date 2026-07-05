@@ -18,3 +18,13 @@ services:
       - '3000:3000'   # Grafana UI
       - '4317:4317'   # OTLP gRPC
       - '4318:4318'   # OTLP HTTP
+    # Spring Boot Docker Compose waits for health, not just start. Without this, the stack
+    # accepts OTLP only ~10s after start and the first request's spans are silently dropped
+    # (the gRPC exporter fails quietly). Grafana's /api/health flips once the stack is up;
+    # curl ships in the image.
+    healthcheck:
+      test: [ 'CMD', 'curl', '-f', 'http://localhost:3000/api/health' ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
