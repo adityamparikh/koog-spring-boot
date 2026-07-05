@@ -1,8 +1,12 @@
 package dev.aparikh.moneytransfer.agent
 
+import dev.aparikh.moneytransfer.account.Account
 import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.contact.ResolvedContact
+import dev.aparikh.moneytransfer.transfer.Transfer
+import dev.aparikh.moneytransfer.transfer.TransferService
+import dev.aparikh.moneytransfer.transfer.TransferStatus
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -10,6 +14,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.math.BigDecimal
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -21,11 +26,13 @@ class MoneyTransferToolsTest {
 
     private val contactService = mockk<ContactService>()
     private val accountService = mockk<AccountService>()
+    private val transferService = mockk<TransferService>()
     private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository())
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-000000000001")
     private val tools = MoneyTransferTools(
         accountId = 1, conversationId = conversationId,
-        contactService = contactService, accountService = accountService, pending = pending,
+        contactService = contactService, accountService = accountService,
+        transferService = transferService, pending = pending,
     )
 
     private fun contact(contactId: Long, accountId: Long, name: String, phone: String? = null) =
@@ -89,7 +96,11 @@ class MoneyTransferToolsTest {
         val staged = (confirmation as PendingInteraction.Confirmation).staged
         assertEquals(2L, staged.recipientAccountId)
         assertEquals(0, staged.amount.compareTo(BigDecimal("50.00")))
-        // Note: MoneyTransferTools has no reference to TransferService — it structurally cannot move money.
+        // Advisory balance hint (FR-22): the summary shows what the transfer leaves the user with.
+        assertEquals(0, staged.balanceAfter!!.compareTo(BigDecimal("950.00")))
+        assertTrue(staged.summary.contains("balance after: $950.00"))
+        // Note: the tools call only read methods on TransferService; every money movement
+        // (initiate AND cancel) happens app-side in AgentService.reply after the confirm gate.
     }
 
     @Test
@@ -110,6 +121,54 @@ class MoneyTransferToolsTest {
         val out = tools.prepareTransfer(recipientContactId = 10, amount = "a lot", purpose = null)
 
         assertTrue(out.contains("not a valid amount"))
+        assertNull(pending.get(conversationId))
+    }
+
+    // --- step 7: settlement status + undo tools ---
+
+    private fun transfer(id: Long, sender: Long, recipient: Long, status: TransferStatus) = Transfer(
+        id = id, senderAccountId = sender, recipientAccountId = recipient,
+        amount = BigDecimal("50.00"), purpose = "dinner", status = status, settleAt = Instant.now(),
+    )
+
+    @Test
+    fun `getRecentTransfers reports direction, status, and settle time`() {
+        every { transferService.recentTransfersFor(1, 10) } returns listOf(
+            transfer(42, sender = 1, recipient = 5, status = TransferStatus.PENDING),
+            transfer(41, sender = 3, recipient = 1, status = TransferStatus.SETTLED),
+        )
+
+        val out = tools.getRecentTransfers()
+
+        assertTrue(out.contains("42 | sent to account 5"), "outgoing transfer should read as sent")
+        assertTrue(out.contains("PENDING"))
+        assertTrue(out.contains("41 | received from account 3"), "incoming transfer should read as received")
+        assertTrue(out.contains("SETTLED"))
+    }
+
+    @Test
+    fun `undoLastTransfer stages a cancel confirmation and does NOT cancel`() {
+        every { transferService.latestPendingFor(1) } returns transfer(42, sender = 1, recipient = 5, status = TransferStatus.PENDING)
+        every { accountService.getAccount(5) } returns Account(id = 5, firstName = "Daniel", balance = BigDecimal("500.00"), lastName = "Craig")
+
+        val out = tools.undoLastTransfer()
+
+        assertTrue(out.contains("confirm", ignoreCase = true))
+        val staged = pending.get(conversationId)
+        assertTrue(staged is PendingInteraction.CancelConfirmation)
+        staged as PendingInteraction.CancelConfirmation
+        assertEquals(42L, staged.transferId)
+        assertTrue(staged.summary.contains("Daniel Craig"), "the summary should name the recipient")
+        // Nothing is cancelled here — TransferService.cancel runs app-side after the user's "yes".
+    }
+
+    @Test
+    fun `undoLastTransfer with nothing pending explains that settled transfers are final`() {
+        every { transferService.latestPendingFor(1) } returns null
+
+        val out = tools.undoLastTransfer()
+
+        assertTrue(out.contains("final", ignoreCase = true))
         assertNull(pending.get(conversationId))
     }
 }

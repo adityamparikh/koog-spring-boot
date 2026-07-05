@@ -33,6 +33,9 @@ class TransferConcurrencyIT {
     lateinit var transferService: TransferService
 
     @Autowired
+    lateinit var transfers: TransferRepository
+
+    @Autowired
     lateinit var accounts: AccountRepository
 
     companion object {
@@ -57,7 +60,7 @@ class TransferConcurrencyIT {
             pool.submit {
                 startGate.await()
                 try {
-                    transferService.transfer(1, 2, amount, "concurrent")
+                    transferService.initiate(1, 2, amount, "concurrent")
                     successes.incrementAndGet()
                 } catch (_: InsufficientFundsException) {
                     // Expected once the sender's funds are exhausted.
@@ -72,11 +75,17 @@ class TransferConcurrencyIT {
         val expectedSuccesses = startSender.divideToIntegralValue(amount).toInt() // 10
         val moved = amount.multiply(BigDecimal(successes.get()))
         val senderBalance = accounts.findById(1).get().balance
-        val recipientBalance = accounts.findById(2).get().balance
 
         assertEquals(expectedSuccesses, successes.get(), "exactly the affordable number of transfers should succeed")
         assertTrue(senderBalance.signum() >= 0, "sender must never go negative")
         assertEquals(0, senderBalance.compareTo(startSender.subtract(moved)), "no lost updates on the sender")
-        assertEquals(0, recipientBalance.compareTo(startRecipient.add(moved)), "no lost updates on the recipient")
+        // Step 7: initiate only reserves — the recipient is untouched until settlement.
+        assertEquals(0, accounts.findById(2).get().balance.compareTo(startRecipient), "recipient untouched while PENDING")
+
+        // Settle everything and prove no credit was lost either.
+        transfers.findBySenderAccountIdOrderByCreatedAtDesc(1)
+            .filter { it.status == TransferStatus.PENDING }
+            .forEach { transferService.settle(requireNotNull(it.id)) }
+        assertEquals(0, accounts.findById(2).get().balance.compareTo(startRecipient.add(moved)), "no lost updates on the recipient")
     }
 }

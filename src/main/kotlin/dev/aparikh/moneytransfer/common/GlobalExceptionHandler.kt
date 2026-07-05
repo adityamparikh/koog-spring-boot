@@ -24,6 +24,12 @@ class GlobalExceptionHandler {
     @ExceptionHandler(NoPendingInteractionException::class)
     fun handleNoPendingInteraction(ex: NoPendingInteractionException) = problem(HttpStatus.CONFLICT, "No pending interaction", ex)
 
+    @ExceptionHandler(UnknownTransferException::class)
+    fun handleUnknownTransfer(ex: UnknownTransferException) = problem(HttpStatus.NOT_FOUND, "Transfer not found", ex)
+
+    @ExceptionHandler(TransferNotCancellableException::class)
+    fun handleTransferNotCancellable(ex: TransferNotCancellableException) = problem(HttpStatus.CONFLICT, "Transfer not cancellable", ex)
+
     @ExceptionHandler(InvalidAmountException::class)
     fun handleInvalidAmount(ex: InvalidAmountException) = problem(HttpStatus.BAD_REQUEST, "Invalid amount", ex)
 

@@ -20,6 +20,10 @@ data class ContactCandidate(
  * A transfer that has been prepared by the `prepareTransfer` tool but **not executed** — it waits for
  * an explicit user confirmation. Keeping it here (not in the ledger) is what guarantees no money
  * moves without a "yes".
+ *
+ * [balanceAfter] is the advisory balance hint (FR-22): the sender's balance as it would be after
+ * this transfer, snapshotted at staging time. Nullable so payloads persisted before step 7 still
+ * deserialize.
  */
 data class StagedTransfer(
     val senderAccountId: Long,
@@ -27,6 +31,7 @@ data class StagedTransfer(
     val recipientDisplay: String,
     val amount: BigDecimal,
     val purpose: String?,
+    val balanceAfter: BigDecimal? = null,
 ) {
     /** Human-readable one-liner used in the CONFIRMATION prompt. Derived — never persisted. */
     @get:JsonIgnore
@@ -37,6 +42,7 @@ data class StagedTransfer(
             append(" to ")
             append(recipientDisplay)
             purpose?.takeIf { it.isNotBlank() }?.let { append(" for \"$it\"") }
+            balanceAfter?.let { append(" (balance after: $").append(it.toPlainString()).append(")") }
         }
 }
 
@@ -50,6 +56,7 @@ data class StagedTransfer(
 @JsonSubTypes(
     JsonSubTypes.Type(value = PendingInteraction.Clarification::class, name = "CLARIFICATION"),
     JsonSubTypes.Type(value = PendingInteraction.Confirmation::class, name = "CONFIRMATION"),
+    JsonSubTypes.Type(value = PendingInteraction.CancelConfirmation::class, name = "CANCEL_CONFIRMATION"),
 )
 sealed interface PendingInteraction {
     /** The recipient was ambiguous/unknown; the user must pick one of [candidates]. */
@@ -57,6 +64,13 @@ sealed interface PendingInteraction {
 
     /** A transfer is staged and awaits an affirmative reply before it executes. */
     data class Confirmation(val staged: StagedTransfer) : PendingInteraction
+
+    /**
+     * A cancellation of a PENDING transfer awaits an affirmative reply before it executes
+     * (step 7 undo). Same gate, opposite direction: money moving *back* is still money moving,
+     * so it too never happens inside the LLM loop.
+     */
+    data class CancelConfirmation(val transferId: Long, val summary: String) : PendingInteraction
 }
 
 /**

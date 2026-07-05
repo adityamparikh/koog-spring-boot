@@ -390,11 +390,11 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - [ ] AC-19c: With no OTLP endpoint configured, the app and the Testcontainers integration tests boot and run unaffected — observability is additive, never required.
 
 **Step 7**
-- [ ] AC-20: A `PENDING` transfer can be undone: status flips to `CANCELLED`, the sender is re-credited, the recipient is never touched. Undoing a `SETTLED` or already-`CANCELLED` transfer is rejected with a clear message and no balance change.
-- [ ] AC-30: A confirmed transfer debits the sender immediately and appears as `PENDING`; the settler credits the recipient and marks it `SETTLED` after `app.transfer.settlement-delay` (integration-tested with a short delay).
-- [ ] AC-31: Concurrent cancel and settle on the same transfer resolve safely — exactly one wins via the conditional update; balances stay consistent.
-- [ ] AC-32: The agent undoes a transfer only after a `CONFIRMATION` "yes" (staged by `undoLastTransfer`); the post-confirm send reply states the settlement window; `getRecentTransfers` reports live status.
-- [ ] AC-33: The confirmation summary shows the post-transfer balance, and an over-balance request still triggers the step-4 re-specify flow (unchanged).
+- [x] AC-20: A `PENDING` transfer can be undone: status flips to `CANCELLED`, the sender is re-credited, the recipient is never touched. Undoing a `SETTLED` or already-`CANCELLED` transfer is rejected with a clear message and no balance change.
+- [x] AC-30: A confirmed transfer debits the sender immediately and appears as `PENDING`; the settler credits the recipient and marks it `SETTLED` after `app.transfer.settlement-delay` (integration-tested with a short delay).
+- [x] AC-31: Concurrent cancel and settle on the same transfer resolve safely — exactly one wins via the conditional update; balances stay consistent.
+- [x] AC-32: The agent undoes a transfer only after a `CONFIRMATION` "yes" (staged by `undoLastTransfer`); the post-confirm send reply states the settlement window; `getRecentTransfers` reports live status.
+- [x] AC-33: The confirmation summary shows the post-transfer balance, and an over-balance request still triggers the step-4 re-specify flow (unchanged).
 
 **Step 8**
 - [ ] AC-21: A long conversation is compressed to retained facts; the agent still answers correctly using retrieved facts.

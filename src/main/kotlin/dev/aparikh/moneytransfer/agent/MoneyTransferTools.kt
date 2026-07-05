@@ -5,7 +5,10 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
+import dev.aparikh.moneytransfer.transfer.TransferService
 import java.math.BigDecimal
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
@@ -26,12 +29,13 @@ import java.util.UUID
  * [PendingInteraction.Confirmation] — the transfer itself executes app-side after the user
  * confirms (see `AgentService.reply`).
  */
-@LLMDescription("Tools for viewing contacts and preparing money transfers for the current user.")
+@LLMDescription("Tools for viewing contacts, preparing money transfers, and undoing pending transfers for the current user.")
 class MoneyTransferTools(
     private val accountId: Long,
     private val conversationId: UUID,
     private val contactService: ContactService,
     private val accountService: AccountService,
+    private val transferService: TransferService,
     private val pending: PendingInteractionStore,
 ) : ToolSet {
 
@@ -148,8 +152,61 @@ class MoneyTransferTools(
             recipientDisplay = contact.displayName,
             amount = requested,
             purpose = purpose,
+            // Advisory balance hint (FR-22): shown in the confirmation summary so the user sees
+            // what the transfer leaves them with. A snapshot, not a guard — the atomic debit at
+            // execution time is the only enforcement.
+            balanceAfter = available - requested,
         )
         pending.put(conversationId, PendingInteraction.Confirmation(staged))
         return "Ready to ${staged.summary}. Ask the user to confirm before sending."
+    }
+
+    /** The user's recent transfers, so the agent can answer "did it go through?" (FR-21). */
+    @Tool
+    @LLMDescription(
+        "List the current user's recent transfers (sent and received), newest first, one per " +
+            "line as 'transferId | direction | amount | status | settlesAt | purpose'. " +
+            "PENDING transfers have not yet reached the recipient and can still be undone; " +
+            "SETTLED ones are final.",
+    )
+    fun getRecentTransfers(): String {
+        val recent = transferService.recentTransfersFor(accountId, RECENT_TRANSFER_LIMIT)
+        if (recent.isEmpty()) return "You have no transfers yet."
+        return recent.joinToString("\n") { t ->
+            val direction = if (t.senderAccountId == accountId) "sent to account ${t.recipientAccountId}" else "received from account ${t.senderAccountId}"
+            val settles = t.settleAt?.let { TIME_FORMAT.format(it) } ?: "—"
+            "${t.id} | $direction | $${t.amount.toPlainString()} | ${t.status} | $settles | ${t.purpose ?: "—"}"
+        }
+    }
+
+    /**
+     * **Stages** a cancellation of the user's most recent PENDING transfer — it does NOT cancel.
+     * Like [prepareTransfer], the actual state change happens app-side only after the user
+     * confirms (money moving back is still money moving).
+     */
+    @Tool
+    @LLMDescription(
+        "Undo the user's most recent pending transfer. This does NOT cancel it — it stages the " +
+            "cancellation and asks the user to confirm. Only PENDING transfers (not yet settled) " +
+            "can be undone; if there is none, say so and explain that settled transfers are final.",
+    )
+    fun undoLastTransfer(): String {
+        val target = transferService.latestPendingFor(accountId)
+            ?: return "There is no pending transfer to undo. Settled transfers are final and cannot be reversed."
+        val recipientName = runCatching { accountService.getAccount(target.recipientAccountId) }
+            .map { listOfNotNull(it.firstName, it.lastName).joinToString(" ") }
+            .getOrDefault("account ${target.recipientAccountId}")
+        val summary = "Cancel your $${target.amount.toPlainString()} transfer to $recipientName" +
+            (target.purpose?.takeIf { it.isNotBlank() }?.let { " for \"$it\"" } ?: "")
+        pending.put(conversationId, PendingInteraction.CancelConfirmation(requireNotNull(target.id), summary))
+        return "Ready to ${summary.replaceFirstChar { it.lowercase() }}. Ask the user to confirm before cancelling."
+    }
+
+    private companion object {
+        const val RECENT_TRANSFER_LIMIT = 10
+
+        /** Compact, unambiguous settle-time rendering for the tool result (UTC). */
+        val TIME_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'").withZone(ZoneId.of("UTC"))
     }
 }

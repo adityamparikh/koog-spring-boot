@@ -1,36 +1,37 @@
-## Implementation Complete — Step 1 (`step1-money-transfer`)
+# Implementation Complete
 
-Persisted money-transfer domain, no AI. Realigned Spring Boot 4 skeleton to **3.5.16**.
+## Step 7 — Async Settlement + Undo (`step7-rollback`)
 
 ### Files Created
-- `compose.yaml` — local PostgreSQL 17 via Spring Boot Docker Compose support.
-- `src/main/resources/db/migration/V1__init.sql` — account/contact/transfer schema (FKs, `CHECK` constraints, indexes).
-- `src/main/resources/db/migration/V2__seed.sql` — seed accounts + 5 contacts (two "Daniel"s) + sequence reset.
-- `account/Account.kt`, `account/AccountRepository.kt` (atomic `debit`/`credit`), `account/AccountService.kt`, `account/AccountController.kt` (+ DTOs).
-- `contact/Contact.kt`, `contact/ContactRepository.kt` (name search), `contact/ContactService.kt`, `contact/ContactController.kt` (+ DTO).
-- `transfer/Transfer.kt` (+ `TransferStatus`), `transfer/TransferRepository.kt`, `transfer/TransferService.kt` (`@Transactional`), `transfer/TransferController.kt` (+ DTOs).
-- `common/DomainExceptions.kt`, `common/GlobalExceptionHandler.kt` (RFC 7807 `ProblemDetail`), `common/OpenApiConfig.kt`.
-- Tests: `transfer/TransferServiceTest.kt` (MockK unit), `MoneyTransferIntegrationTest.kt` + `transfer/TransferConcurrencyIT.kt` (Testcontainers, `disabledWithoutDocker`).
+- `src/main/resources/db/migration/V4__async_settlement.sql` — `settle_at` column, `COMPLETED`→`SETTLED` data migration, partial index for the settler poll
+- `src/main/kotlin/dev/aparikh/moneytransfer/transfer/TransferProperties.kt` — `app.transfer.settlement-delay` (PT2M) + `settlement-poll-ms`
+- `src/main/kotlin/dev/aparikh/moneytransfer/transfer/TransferSettler.kt` — `@Scheduled` outbox-style poller; per-row delegation with failure isolation
+- `src/test/kotlin/dev/aparikh/moneytransfer/transfer/TransferSettlerTest.kt` — poll-loop unit tests
+- `src/test/kotlin/dev/aparikh/moneytransfer/transfer/SettlementLifecycleIT.kt` — scheduler-driven settle (AC-30) + cancel-vs-settle race (AC-31), real Postgres
 
 ### Files Modified
-- `build.gradle.kts` — Boot 3.5.16 plugin, Spring Data JDBC + Flyway + Postgres + springdoc + Testcontainers + MockK; catalog aliases only; dropped Koog/Boot-4 bits; kept Java 25 + `-Xjsr305=strict`.
-- `gradle/libs.versions.toml` — version catalog as single source of truth (Boot 3.5.16, springdoc 2.8.17, MockK 1.14.11; Koog entries retained for later steps).
-- `src/main/resources/application.properties` — virtual threads, Flyway, springdoc, docker-compose datasource.
-- Removed the default `KoogSpringBootApplicationTests.kt` (folded context-load into the Testcontainers IT).
+- `Transfer.kt` — `TransferStatus` → `PENDING | SETTLED | CANCELLED | FAILED`; `settleAt` field
+- `TransferRepository.kt` — settler poll query, atomic conditional flips (`markSettled/markCancelled/markFailed`), sender-or-recipient list
+- `TransferService.kt` — `transfer()` split into `initiate` (debit + PENDING) / `settle` (credit behind winning flip; FAILED+refund path) / `cancel` (undo while PENDING only); `transfersFor`, `latestPendingFor`
+- `TransferController.kt` — `POST /{id}/cancel`; response carries `settleAt`; list shows sent+received
+- `common/DomainExceptions.kt` + `GlobalExceptionHandler.kt` — `UnknownTransferException` (404), `TransferNotCancellableException` (409)
+- `agent/PendingInteractionStore.kt` — `PendingInteraction.CancelConfirmation` variant; `StagedTransfer.balanceAfter` (summary shows "balance after: $X")
+- `agent/MoneyTransferTools.kt` — new tools `getRecentTransfers`, `undoLastTransfer` (stages only); `prepareTransfer` computes balance-after
+- `agent/AgentService.kt` — routes cancel confirmations through the same deterministic gate; post-confirm reply is "Queued … say 'undo'"; live balance in system prompt
+- `application.properties` — `app.transfer.*` settlement config
+- Tests updated for the contract change (instant → async settlement): `TransferServiceTest`, `TransferConcurrencyIT`, `MoneyTransferIntegrationTest`, `AgentServiceTest`, `AgentConfirmationIntegrationTest`, `MoneyTransferToolsTest`
+- Docs: README step-7 section (send→status→undo walkthrough, REST lifecycle), `docs/data-model.md` (state machine), `docs/agent-flow.md` (queued wording)
 
-### Acceptance Criteria (all executed against real PostgreSQL via Testcontainers)
-- [x] AC-01: Passed — `./gradlew build` green (compiles + all 12 tests).
-- [x] AC-02: Passed — `MoneyTransferIntegrationTest#happy path transfer persists updated balances` (reads balances back from Postgres).
-- [x] AC-03: Passed — `TransferServiceTest#...insufficient funds...` + `MoneyTransferIntegrationTest#...returns 422...`.
-- [x] AC-04: Passed — `MoneyTransferIntegrationTest#...two Daniels` (ambiguous lookup via join to `account`).
-- [x] AC-05: Passed — `MoneyTransferIntegrationTest#openapi docs...` + `...422 problem detail`.
-- [x] AC-06: Passed — every IT boots Flyway on a clean containerized DB.
-- [x] AC-07: Passed — `TransferConcurrencyIT#concurrent transfers never overdraw and never lose updates`.
-- [x] AC-08: Passed — 5 unit + 7 integration/concurrency tests, 12/12 green.
+### Acceptance Criteria
+- [x] AC-20: Passed — `TransferServiceTest` cancel cases; `MoneyTransferIntegrationTest#cancelling a pending transfer…` + `#a settled transfer cannot be cancelled`; `AgentConfirmationIntegrationTest#affirming a staged cancellation…`
+- [x] AC-30: Passed — `SettlementLifecycleIT#a confirmed transfer settles on its own after the settlement delay`; `MoneyTransferIntegrationTest#happy path…`
+- [x] AC-31: Passed — `SettlementLifecycleIT#racing cancel and settle produce exactly one winner and consistent balances`
+- [x] AC-32: Passed — `AgentServiceTest` cancel-confirmation suite (affirm-once, settled-race message, deny, unclear); `MoneyTransferToolsTest#undoLastTransfer stages…`
+- [x] AC-33: Passed — `MoneyTransferToolsTest#prepareTransfer stages…` (balance-after in summary); over-balance re-specify tests unchanged and green
+
+Full build: `./gradlew build` — 67 tests, 0 failures (unit + Testcontainers ITs).
 
 ### Notes
-- **Full suite ran against Docker/Testcontainers** — 12/12 tests pass (unit + integration + concurrency). The `@Testcontainers(disabledWithoutDocker = true)` guard means the build also stays green on machines without Docker (IT skipped).
-- **Venmo-style domain model:** `Account` is the profile + wallet (single source of truth for `firstName`/`lastName`/`phoneNumber`); `Contact` is a thin edge `(ownerAccountId, contactAccountId, nickname?)` — no duplicated name/phone (`linkedAccountId` → `contactAccountId`). Contact display is resolved from the linked account; name search joins to it. See `docs/data-model.md` for the ER diagram.
-- **Gradle stays on 9.5.1** (the plan floated a downgrade to 8.x): JDK 25 requires Gradle 9, and Boot 3.5.16's plugin applies cleanly on 9.5.1 — so no wrapper change.
-- Concurrency safety uses the **atomic conditional UPDATE** (no `@Version`). Existence is checked before the debit so a `0` row-count unambiguously means insufficient funds.
-- `plan.md`/`feature.md` live in a separate docs PR; on this branch they are git-excluded reference copies.
+- `settle()` lives on `TransferService` (not the settler) — keeps all three state transitions together and avoids Spring's self-invocation `@Transactional` trap the plan's `settleOne` sketch would have hit. `settle()` does not check `settle_at` (dueness is the poller's contract), which also lets tests drive the lifecycle deterministically.
+- `MoneyTransferTools` now references `TransferService` for reads (`transfersFor`, `latestPendingFor`); the step-3 claim "tools structurally cannot move money" is now "tools call only read methods — every money movement still executes app-side behind the confirm gate" (test comment updated accordingly).
+- V4 migrates historical `COMPLETED` rows to `SETTLED` (truthful: they did settle); `settleAt` is null only on pre-step-7 rows.

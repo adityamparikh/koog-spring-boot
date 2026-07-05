@@ -5,7 +5,9 @@ import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
+import dev.aparikh.moneytransfer.common.TransferNotCancellableException
 import dev.aparikh.moneytransfer.contact.ContactService
+import dev.aparikh.moneytransfer.transfer.TransferProperties
 import dev.aparikh.moneytransfer.transfer.TransferService
 import io.mockk.coEvery
 import io.mockk.every
@@ -39,8 +41,8 @@ class AgentServiceTest {
     private val transferService = mockk<TransferService>(relaxed = true)
     private val interpreter = mockk<AffirmationInterpreter>()
     private val service = AgentService(
-        executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService, interpreter,
-        ObservabilityProperties(), properties = AgentModelProperties(),
+        executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService,
+        TransferProperties(), interpreter, ObservabilityProperties(), properties = AgentModelProperties(),
     )
 
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")
@@ -53,14 +55,17 @@ class AgentServiceTest {
     )
 
     @Test
-    fun `affirming a confirmation executes the staged transfer once and clears it`() {
+    fun `affirming a confirmation initiates the staged transfer once and reports the undo window`() {
         stageConfirmation()
         coEvery { interpreter.interpret("yeah go for it") } returns Affirmation.AFFIRM
 
         val result = runBlocking { service.reply(accountId = 1, conversationId = conversationId, answer = "yeah go for it") }
 
         assertEquals(InteractionType.ANSWER, result.type)
-        verify(exactly = 1) { transferService.transfer(1, 2, BigDecimal("50.00"), "lunch") }
+        verify(exactly = 1) { transferService.initiate(1, 2, BigDecimal("50.00"), "lunch") }
+        // Step 7: settlement is async — the reply says "queued", names the window, and offers undo.
+        assertTrue(result.reply.contains("Queued"))
+        assertTrue(result.reply.contains("undo"))
         assertNull(pending.get(conversationId))
     }
 
@@ -72,7 +77,7 @@ class AgentServiceTest {
         val result = runBlocking { service.reply(1, conversationId, "no, cancel that") }
 
         assertEquals(InteractionType.ANSWER, result.type)
-        verify(exactly = 0) { transferService.transfer(any(), any(), any(), any()) }
+        verify(exactly = 0) { transferService.initiate(any(), any(), any(), any()) }
         assertNull(pending.get(conversationId))
     }
 
@@ -85,7 +90,7 @@ class AgentServiceTest {
 
         assertEquals(InteractionType.CONFIRMATION, result.type)
         assertNotNull(result.transferSummary)
-        verify(exactly = 0) { transferService.transfer(any(), any(), any(), any()) }
+        verify(exactly = 0) { transferService.initiate(any(), any(), any(), any()) }
         assertNotNull(pending.get(conversationId)) // still pending
     }
 
@@ -93,7 +98,7 @@ class AgentServiceTest {
     fun `affirming an over-balance transfer reports the failure and moves no money`() {
         stageConfirmation()
         coEvery { interpreter.interpret("yes") } returns Affirmation.AFFIRM
-        every { transferService.transfer(1, 2, BigDecimal("50.00"), "lunch") } throws InsufficientFundsException(1, BigDecimal("50.00"))
+        every { transferService.initiate(1, 2, BigDecimal("50.00"), "lunch") } throws InsufficientFundsException(1, BigDecimal("50.00"))
 
         val result = runBlocking { service.reply(1, conversationId, "yes") }
 
@@ -107,5 +112,62 @@ class AgentServiceTest {
         assertThrows<NoPendingInteractionException> {
             runBlocking { service.reply(1, UUID.randomUUID(), "yes") }
         }
+    }
+
+    // --- step 7: the undo confirmation goes through the same deterministic gate ---
+
+    private fun stageCancelConfirmation() = pending.put(
+        conversationId,
+        PendingInteraction.CancelConfirmation(transferId = 42, summary = "Cancel your $50.00 transfer to Alice Smith"),
+    )
+
+    @Test
+    fun `affirming a cancel confirmation cancels the transfer once and clears it`() {
+        stageCancelConfirmation()
+        coEvery { interpreter.interpret("yes") } returns Affirmation.AFFIRM
+
+        val result = runBlocking { service.reply(accountId = 1, conversationId = conversationId, answer = "yes") }
+
+        assertEquals(InteractionType.ANSWER, result.type)
+        verify(exactly = 1) { transferService.cancel(42, 1) }
+        assertNull(pending.get(conversationId))
+    }
+
+    @Test
+    fun `affirming a cancel that lost the race to the settler reports it settled`() {
+        stageCancelConfirmation()
+        coEvery { interpreter.interpret("yes") } returns Affirmation.AFFIRM
+        every { transferService.cancel(42, 1) } throws TransferNotCancellableException(42, "SETTLED")
+
+        val result = runBlocking { service.reply(1, conversationId, "yes") }
+
+        assertEquals(InteractionType.ANSWER, result.type)
+        assertTrue(result.reply.contains("already settled"))
+        assertNull(pending.get(conversationId))
+    }
+
+    @Test
+    fun `denying a cancel confirmation leaves the transfer queued`() {
+        stageCancelConfirmation()
+        coEvery { interpreter.interpret("no") } returns Affirmation.DENY
+
+        val result = runBlocking { service.reply(1, conversationId, "no") }
+
+        assertEquals(InteractionType.ANSWER, result.type)
+        verify(exactly = 0) { transferService.cancel(any(), any()) }
+        assertNull(pending.get(conversationId))
+    }
+
+    @Test
+    fun `an unclear cancel reply re-prompts with the cancellation summary`() {
+        stageCancelConfirmation()
+        coEvery { interpreter.interpret(any()) } returns Affirmation.UNCLEAR
+
+        val result = runBlocking { service.reply(1, conversationId, "hmm") }
+
+        assertEquals(InteractionType.CONFIRMATION, result.type)
+        assertNotNull(result.transferSummary)
+        verify(exactly = 0) { transferService.cancel(any(), any()) }
+        assertNotNull(pending.get(conversationId)) // still awaiting a clear yes/no
     }
 }

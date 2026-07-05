@@ -22,14 +22,18 @@ import ai.koog.prompt.message.ResponseMetaInfo
 import dev.aparikh.moneytransfer.common.AgentUnavailableException
 import dev.aparikh.moneytransfer.common.InsufficientFundsException
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
+import dev.aparikh.moneytransfer.common.TransferNotCancellableException
 import dev.aparikh.moneytransfer.common.UnknownAccountException
+import dev.aparikh.moneytransfer.common.UnknownTransferException
 import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
+import dev.aparikh.moneytransfer.transfer.TransferProperties
 import dev.aparikh.moneytransfer.transfer.TransferService
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
+import java.math.BigDecimal
 import java.util.UUID
 
 /** The kind of turn the API is reporting back to the caller. */
@@ -40,6 +44,15 @@ private val PendingInteraction.awaiting: InteractionType
     get() = when (this) {
         is PendingInteraction.Clarification -> InteractionType.CLARIFICATION
         is PendingInteraction.Confirmation -> InteractionType.CONFIRMATION
+        is PendingInteraction.CancelConfirmation -> InteractionType.CONFIRMATION
+    }
+
+/** What a CONFIRMATION is about — send or cancel — for the response's `transferSummary` field. */
+private val PendingInteraction.confirmationSummary: String?
+    get() = when (this) {
+        is PendingInteraction.Confirmation -> staged.summary
+        is PendingInteraction.CancelConfirmation -> summary
+        is PendingInteraction.Clarification -> null
     }
 
 /**
@@ -97,6 +110,7 @@ class AgentService(
     private val contactService: ContactService,
     private val accountService: AccountService,
     private val transferService: TransferService,
+    private val transferProperties: TransferProperties,
     private val affirmationInterpreter: AffirmationInterpreter,
     private val observability: ObservabilityProperties,
     // Present only when app.observability.enabled=true (the beans are @ConditionalOnProperty); null
@@ -126,6 +140,11 @@ class AgentService(
     suspend fun chat(accountId: Long, message: String, conversationId: UUID?): ChatResponse {
         val id = conversationId ?: UUID.randomUUID()
 
+        // Resolve the balance hint (FR-22) BEFORE the fallback loop: an unknown account must
+        // surface as 404 here — inside the loop its exception would be mistaken for a provider
+        // failure, burn a pointless cross-provider retry, and return a misleading 503.
+        val balance = accountService.getBalance(accountId)
+
         var lastError: Exception? = null
         for ((index, model) in llms.withIndex()) {
             // Clear before *each* attempt, not once before the loop: a new intent discards any stale
@@ -133,7 +152,7 @@ class AgentService(
             // attempt staged and then abandoned by failing mid-run.
             pending.clear(id)
             try {
-                val reply = runAgent(accountId, id, model, message)
+                val reply = runAgent(accountId, id, model, message, balance)
                 return tag(reply, id)
             } catch (e: CancellationException) {
                 throw e
@@ -162,6 +181,7 @@ class AgentService(
         when (val interaction = pending.get(conversationId)) {
             is PendingInteraction.Clarification -> chat(accountId, answer, conversationId)
             is PendingInteraction.Confirmation -> resolveConfirmation(conversationId, interaction, answer)
+            is PendingInteraction.CancelConfirmation -> resolveCancelConfirmation(accountId, conversationId, interaction, answer)
             null -> throw NoPendingInteractionException(conversationId)
         }
 
@@ -189,12 +209,15 @@ class AgentService(
                     return respond(conversationId, answer, "That transfer was already handled, so nothing else was sent.")
                 }
                 val target = claimed.staged
-                // Deliberate ordering: consume() commits before transfer() (reply is not @Transactional),
+                // Deliberate ordering: consume() commits before initiate() (reply is not @Transactional),
                 // so a crash between them loses the staged intent — no money moved, never a double-send.
-                // Do NOT reorder transfer before consume; that trades the safe failure for a double-send.
+                // Do NOT reorder initiate before consume; that trades the safe failure for a double-send.
                 val reply = try {
-                    transferService.transfer(target.senderAccountId, target.recipientAccountId, target.amount, target.purpose)
-                    "Done — sent $${target.amount.toPlainString()} to ${target.recipientDisplay}."
+                    // Step 7: initiate debits the sender and queues the transfer as PENDING — the
+                    // recipient is credited by the settler after the settlement window (FR-20).
+                    transferService.initiate(target.senderAccountId, target.recipientAccountId, target.amount, target.purpose)
+                    "Queued — $${target.amount.toPlainString()} to ${target.recipientDisplay} settles in " +
+                        "$settlementWindowPhrase; say \"undo\" before then to cancel."
                 } catch (e: InsufficientFundsException) {
                     // Step 3 fails honestly here; step 4 adds the "offer up to your balance" flow.
                     "That transfer would exceed your balance, so nothing was sent."
@@ -220,6 +243,50 @@ class AgentService(
         }
     }
 
+    /**
+     * Resolves a pending **cancellation** (step 7 undo) — the same deterministic gate as sends,
+     * in the opposite direction. Affirm → atomically consume, then cancel the PENDING transfer;
+     * if the settler won the race in the meantime, report honestly that it already settled.
+     */
+    private suspend fun resolveCancelConfirmation(
+        accountId: Long,
+        conversationId: UUID,
+        confirmation: PendingInteraction.CancelConfirmation,
+        answer: String,
+    ): ChatResponse = when (affirmationInterpreter.interpret(answer)) {
+        Affirmation.AFFIRM -> {
+            // Same consume-first idempotency as sends: racing "yes" replies cancel at most once.
+            val claimed = pending.consume(conversationId) as? PendingInteraction.CancelConfirmation
+            if (claimed == null) {
+                respond(conversationId, answer, "That cancellation was already handled, so nothing else was changed.")
+            } else {
+                val reply = try {
+                    transferService.cancel(claimed.transferId, accountId)
+                    "Done — cancelled the transfer; the money is back in your balance."
+                } catch (e: TransferNotCancellableException) {
+                    "Too late — that transfer already settled, and settled transfers can't be reversed."
+                } catch (e: UnknownTransferException) {
+                    "That transfer no longer exists, so there was nothing to cancel."
+                }
+                respond(conversationId, answer, reply)
+            }
+        }
+
+        Affirmation.DENY -> {
+            pending.clear(conversationId)
+            respond(conversationId, answer, "Okay — the transfer stays queued and will settle as planned.")
+        }
+
+        Affirmation.UNCLEAR ->
+            respond(
+                conversationId,
+                answer,
+                "Sorry, I didn't catch that. Reply \"yes\" to ${confirmation.summary.replaceFirstChar { it.lowercase() }}, or \"no\" to keep it.",
+                type = InteractionType.CONFIRMATION,
+                transferSummary = confirmation.summary,
+            )
+    }
+
     /** Records the [userMessage]/[reply] exchange into ChatMemory, then builds the tagged response. */
     private suspend fun respond(
         conversationId: UUID,
@@ -238,10 +305,10 @@ class AgentService(
      *
      * This is the densest cluster of Koog concepts in the app; each call site is annotated below.
      */
-    private suspend fun runAgent(accountId: Long, conversationId: UUID, model: LLModel, input: String): String {
+    private suspend fun runAgent(accountId: Long, conversationId: UUID, model: LLModel, input: String, balance: BigDecimal): String {
         // 1. Our ToolSet. Built fresh per request so the acting accountId/conversationId are
         //    captured as fields — never LLM-supplied arguments (that would be an injection risk).
-        val tools = MoneyTransferTools(accountId, conversationId, contactService, accountService, pending)
+        val tools = MoneyTransferTools(accountId, conversationId, contactService, accountService, transferService, pending)
 
         // 2. Koog ToolRegistry: `tools(instance)` reflects the @Tool methods into Tool objects
         //    (via ToolSet.asTools()) and registers them for the agent. https://docs.koog.ai/tools-overview/
@@ -256,7 +323,7 @@ class AgentService(
             promptExecutor = multiLLMPromptExecutor,
             llmModel = model,
             toolRegistry = registry,
-            systemPrompt = systemPrompt(accountId),
+            systemPrompt = systemPrompt(accountId, balance),
         ) {
             // 4. Koog event handlers (FR-09): observe every LLM and tool call as the run unfolds.
             //    Here we just log; the same hooks feed tracing/metrics in step 6. https://docs.koog.ai/agent-events/
@@ -317,7 +384,7 @@ class AgentService(
             conversationId,
             type = p?.awaiting ?: InteractionType.ANSWER,
             candidates = (p as? PendingInteraction.Clarification)?.candidates ?: emptyList(),
-            transferSummary = (p as? PendingInteraction.Confirmation)?.staged?.summary,
+            transferSummary = p?.confirmationSummary,
         )
     }
 
@@ -345,10 +412,26 @@ class AgentService(
         )
     }
 
-    private fun systemPrompt(accountId: Long): String =
-        "You are a money-transfer assistant for account $accountId. Use the tools to look up " +
-            "contacts and prepare transfers. When a recipient is ambiguous, ask the user to choose; " +
-            "never guess."
+    /**
+     * Built per turn so the balance hint (FR-22) is live, not stale ([balance] is resolved at the
+     * top of [chat], outside the fallback loop). The hint is advisory — the tool-level refusal and
+     * the domain's atomic debit remain the real guards.
+     */
+    private fun systemPrompt(accountId: Long, balance: BigDecimal): String =
+        "You are a money-transfer assistant for account $accountId. The user's current available " +
+            "balance is $${balance.toPlainString()}. Use the tools to " +
+            "look up contacts, prepare transfers, check recent transfers, and undo pending ones. " +
+            "When a recipient is ambiguous, ask the user to choose; never guess. Money never moves " +
+            "— in either direction — without the user's explicit confirmation."
+
+    /** "about 2 minutes" / "about 30 seconds" — how long a queued transfer stays undoable. */
+    private val settlementWindowPhrase: String = transferProperties.settlementDelay.let { delay ->
+        if (delay.toMinutes() >= 1) {
+            "about ${delay.toMinutes()} minute${if (delay.toMinutes() == 1L) "" else "s"}"
+        } else {
+            "about ${delay.seconds} seconds"
+        }
+    }
 
     private fun resolve(definitions: LLModelDefinitions, modelId: String): LLModel =
         definitions.modelsById()[modelId]
