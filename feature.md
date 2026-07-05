@@ -6,7 +6,7 @@ layer Koog agentic capabilities on top of it, one "ingredient" at a time. The ba
 application (step 1) performs money transfers between accounts with no AI. Each
 subsequent step adds one Koog capability — framework integration, tools, a custom
 validation strategy, Postgres-backed checkpointing, OpenTelemetry observability,
-transfer rollback, and history compression — following the JetBrains Koog "sandwich
+async transfer settlement with an undo window, and history compression — following the JetBrains Koog "sandwich
 recipe" (Devoxx Belgium 2025) and the `svtk/koog-tutorials` IntroToAIAgents tutorial.
 The final step refactors the LLM layer to run through Spring AI. Every step is delivered
 on its own git branch that builds on the previous branch, and work **pauses after each
@@ -23,12 +23,38 @@ step** for review and explicit go-ahead before the next begins.
 - As a **bank customer**, when I try to send more than my balance, I want the assistant
   to tell me and offer to send up to my available balance so that the transfer doesn't
   simply fail.
-- As a **bank customer**, I want to undo a transfer I just made so that mistakes are
-  recoverable.
+- As a **bank customer**, I want to undo a transfer I just made **while it is still pending
+  settlement** so that mistakes are recoverable (a settled transfer is final).
 - As an **operator/developer**, I want agent runs to be checkpointed, traced, and
   resumable so that I can observe, debug, and recover long-running conversations.
 - As a **developer**, I want each capability isolated on its own branch with tests so
   that I can review and learn the framework incrementally.
+
+## Transfer Lifecycle (domain view)
+
+The steps of a money transfer, independent of any technology, and where each is handled in
+this build. The user-visible spine is *select recipient → select amount → confirm → debit →
+credit*; the domain lives in the gaps between those steps — each gap is either a validation
+that must be **re-done at execution time** (time passes between choosing and executing) or a
+**record/state that makes failure survivable**:
+
+| # | Domain step | Where it's handled |
+|---|-------------|--------------------|
+| L0 | Identify & authorize the sender | `X-User-Id` header (real authentication out of scope, OQ-9) |
+| L1 | Resolve & validate the recipient | contact lookup + HITL disambiguation (FR-04, FR-08, FR-10); recipient existence re-checked at execution (FR-03, FR-20) |
+| L2 | Choose & validate the amount | positive/precision checks; balance check + re-specify flow (FR-11, FR-12) and balance hint (FR-22) are **advisory** — enforcement happens only at debit time |
+| L3 | Present a frozen quote | the staged transfer summary: recipient, amount, purpose, balance-after (FR-10, FR-22); abandoned quotes expire via the pending-interaction TTL sweep |
+| L4 | Confirm exactly once | deterministic affirmation + atomic consume — a racing double "yes" fires at most once (FR-10, FR-14) |
+| L5 | Atomically re-validate + debit + **record** | conditional `UPDATE … WHERE balance >= :amount` + `PENDING` ledger row, one transaction (FR-03, FR-20) |
+| L6 | Credit the recipient — or return the funds | the settler: credit + `SETTLED`; on failure `FAILED` + re-credit sender (FR-20) |
+| L7 | Notify the parties | conversational reply to the sender ("Queued — settles in ~X"); push/receipt notifications out of scope |
+| L8 | Expose status | `getRecentTransfers` tool (FR-21), transfer list endpoint, conversation `/status` (FR-14) |
+| L9 | Allow cancel until final | the undo window while `PENDING` (FR-16) |
+| L10 | Handle disputes after finality | out of scope — settled is terminal by design |
+
+Tutorial steps 1–4 built the validations (L0–L4); step 5 made the pauses durable (L3–L4);
+**step 7 splits L5 from L6** — the code changes from a single debit+credit transaction to
+*debit-and-record at confirm, credit at settlement*, with L6–L9 falling out of that split.
 
 ## Delivery Strategy (branches & pauses)
 Each step is a branch built on top of the previous one. After each step the assistant
@@ -46,7 +72,7 @@ all at once at the end.
 | 4 | `step4-custom-strategy` | step 3 | Balance lookup + custom strategy: cap transfer at available balance. |
 | 5 | `step5-persistence` | step 4 | Koog checkpointing persisted to the existing Postgres (in-memory provider → Postgres provider). |
 | 6 | `step6-observability` | step 5 | OpenTelemetry via docker-compose. |
-| 7 | `step7-rollback` | step 6 | Undo a transfer (compensating action / rollback registry). |
+| 7 | `step7-rollback` | step 6 | Async settlement (`PENDING → SETTLED`) with an undo window (cancel while pending); balance-hint polish. |
 | 8 | `step8-history-compression` | step 7 | History compression with fact retrieval. |
 | 9 | `step9-unit-integration-tests` | step 8 | Fill out unit + integration test coverage. |
 | 10 | `step10-spring-ai` | step 9 | Refactor LLM layer to Spring AI integration. |
@@ -227,29 +253,79 @@ unchanged — only the provider bean changes.
 
 ### Step 6 — `step6-observability`
 
-#### FR-15: OpenTelemetry
-Add OpenTelemetry tracing/metrics for agent execution, exporting via OTLP to the Grafana
-**LGTM** stack (`grafana/otel-lgtm` all-in-one container: Loki, Grafana, Tempo, Mimir)
-defined in docker-compose. Agent LLM calls and tool calls appear as spans in Tempo,
-viewable in Grafana.
+#### FR-15: OpenTelemetry observability
+Instrument agent execution with OpenTelemetry and export via OTLP to the Grafana **LGTM**
+stack (`grafana/otel-lgtm` all-in-one container: Loki, Grafana, Tempo, Mimir) run from
+docker-compose. Agent LLM calls and tool calls appear as spans in Tempo, viewable in Grafana.
+
+- **Agent tracing + metrics (Koog):** install Koog's `OpenTelemetry` feature in the shared agent
+  builder, alongside `handleEvents`/`ChatMemory`/`Persistence`. The feature intercepts the pipeline —
+  agent, strategy, **node**, **subgraph**, LLM-call, and tool-call events — so every LLM and tool
+  call becomes a **span** (→ Tempo), and it emits GenAI **metrics** (token usage, operation latency,
+  tool-call counts → Mimir). The install is **strategy-agnostic**: it hooks the pipeline, not the
+  strategy, so a future custom strategy graph automatically yields per-node/subgraph spans with no
+  rework. The feature module ships **transitively via `koog-agents`** (no new Koog dependency).
+- **Service tracing (Spring):** Spring Boot Actuator + Micrometer Tracing (OTel bridge) export
+  HTTP and JDBC spans to the same OTLP endpoint and tag resource attributes (service name/version),
+  so the request → agent-run path is viewable end-to-end.
+- **Config & safety:** the OTLP endpoint and trace sampling are externalized in configuration.
+  When no endpoint is configured (integration tests, plain local runs), export is a **no-op** so
+  the app boots and behaves identically without the LGTM stack — observability is additive, never
+  required. Only the OTLP exporter and the Micrometer OTel bridge are added to the version catalog.
 
 ### Step 7 — `step7-rollback`
 
-#### FR-16: Undo a transfer
-Provide the ability to undo a previously executed transfer as a **domain-level compensating
-reversal**: within one `@Transactional` unit, credit the original sender, debit the original
-recipient (using the same atomic conditional UPDATE), append an offsetting `Transfer` ledger
-row (the ledger is immutable — nothing is deleted), and mark the original transfer
-`REVERSED`. The undo is **idempotent**: a transfer already `REVERSED` cannot be undone again,
-and a reversal entry cannot itself be reversed. Surface it as a Koog **rollback tool** (a
-forward `sendMoney` action paired with this compensating function, per the Devoxx
-`RollbackToolRegistry` pattern) **and** a REST endpoint.
+#### FR-20: Async settlement (PENDING → SETTLED)
+Confirming a transfer no longer settles it instantly. On the user's "yes", the app
+**atomically debits the sender and inserts the transfer as `PENDING`** with
+`settle_at = now + delay` (funds reservation — the sender's available balance stays honest
+while settlement is in flight). A **`@Scheduled` outbox-style settler** polls
+`status = 'PENDING' AND settle_at <= now`, credits the recipient and flips the row to
+`SETTLED` in one transaction — restart-safe by construction, because the work queue *is* the
+Postgres table, not in-memory events. If settlement is impossible (recipient account gone),
+the transfer is marked `FAILED` and the sender re-credited. Transfer states:
+`PENDING → SETTLED | CANCELLED | FAILED` (all terminal). Schema change via **Flyway V4**
+(`settle_at` column + new status values). The delay is configuration:
+`app.transfer.settlement-delay` (default `PT2M`; ~1 s in integration tests). The settlement
+delay **is** the undo window (FR-16) — the "undo send" model.
+
+#### FR-16: Undo a pending transfer (cancel before settlement)
+A transfer can be undone **only while it is `PENDING`** — the sender has been debited but the
+recipient has not yet been credited. Undo is an atomic conditional
+`UPDATE … SET status = 'CANCELLED' WHERE id = ? AND status = 'PENDING'` plus a re-credit of
+the sender, in one `@Transactional` unit. **A `SETTLED` transfer can never be reversed** — an
+undo attempt is rejected with a clear message (when it settled, and that it can no longer be
+undone). The cancel-vs-settle race is resolved by the conditional update: both writers guard
+on `status = 'PENDING'`, whichever commits first wins, the loser no-ops — no account ever
+goes negative. A repeated undo (already `CANCELLED`) is rejected the same way. The ledger
+stays immutable: cancellation flips status and re-credits; nothing is deleted. Surfaced as an
+agent tool (FR-21) **and** `POST /api/v1/transfers/{id}/cancel`.
 
 Note: this is distinct from Koog's *agent-state* checkpoint rollback (step 5), which rewinds
-a **conversation** to an earlier checkpoint. Undoing money is a domain compensation on the
-ledger; rewinding a conversation is agent bookkeeping. The two may be used together (e.g. an
-agent turn that both reverses a transfer and rolls its conversation back) but are separate
-mechanisms.
+a **conversation** to an earlier checkpoint. Cancelling money is a domain state transition on
+the ledger; rewinding a conversation is agent bookkeeping.
+
+#### FR-21: Agent tools & replies for settlement/undo
+Two new tools: **`getRecentTransfers`** (id, recipient, amount, status, settles-at) so the
+agent can answer "did my transfer go through?" and resolve which transfer "undo that" refers
+to; and **`undoLastTransfer`**, which — like `prepareTransfer` — only **stages** a
+`PendingInteraction.Confirmation` ("Cancel your $50 transfer to Alice?"); the cancel executes
+app-side in `reply()` after a deterministic affirmation. **The HITL boundary is unchanged: no
+money moves (in either direction) inside the LLM loop.** The post-confirm reply for a send
+changes from "Done — sent" to "Queued — settles in about X; say 'undo' before then to cancel."
+
+> Strategy note: step 7 stays on the default `singleRunStrategy` — **no custom graph**. The new
+> control flow is either *outside* any agent run (the `@Scheduled` settler) or *between* runs
+> (the cross-turn undo confirmation), and Koog strategy graphs only shape flow *within* a run.
+> Same reasoning as step 4; see `docs/notes/custom-strategies.md`. The justified future use of a
+> graph remains intent routing, if a second capability (e.g. spending analytics) is ever added.
+
+#### FR-22: Proactive balance hint (advisory)
+The per-turn system prompt includes the sender's live balance, and the staged confirmation
+summary shows the balance after the transfer ("Send $200 to Charlie — balance after: $300").
+**Advisory only:** the step-4 re-specify flow (the user picks the amount — never a silent
+cap), the tool-level refusal to stage over-balance transfers, and the domain's atomic
+overdraft check all remain unchanged.
 
 ### Step 8 — `step8-history-compression`
 
@@ -309,10 +385,16 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - [ ] AC-18: Agent runs are checkpointed to Postgres (provider swapped from in-memory); a paused conversation resumes after an app restart.
 
 **Step 6**
-- [ ] AC-19: OpenTelemetry spans for agent LLM calls and tool calls are exported via OTLP to the LGTM stack and visible in Grafana/Tempo.
+- [ ] AC-19: Koog's OpenTelemetry feature is installed in the shared agent builder; a run over the `agents-test` mock executor emits spans for the LLM call and each tool call (asserted via an in-memory span exporter).
+- [ ] AC-19b: Agent LLM/tool spans export via OTLP to the `grafana/otel-lgtm` stack and are visible in Grafana/Tempo (manual/dev verification, documented in the README).
+- [ ] AC-19c: With no OTLP endpoint configured, the app and the Testcontainers integration tests boot and run unaffected — observability is additive, never required.
 
 **Step 7**
-- [ ] AC-20: A completed transfer can be undone via a compensating reversal; balances return to their pre-transfer values, an offsetting ledger row is appended, and the original transfer is marked `REVERSED`. Undoing an already-reversed transfer is rejected (idempotent).
+- [ ] AC-20: A `PENDING` transfer can be undone: status flips to `CANCELLED`, the sender is re-credited, the recipient is never touched. Undoing a `SETTLED` or already-`CANCELLED` transfer is rejected with a clear message and no balance change.
+- [ ] AC-30: A confirmed transfer debits the sender immediately and appears as `PENDING`; the settler credits the recipient and marks it `SETTLED` after `app.transfer.settlement-delay` (integration-tested with a short delay).
+- [ ] AC-31: Concurrent cancel and settle on the same transfer resolve safely — exactly one wins via the conditional update; balances stay consistent.
+- [ ] AC-32: The agent undoes a transfer only after a `CONFIRMATION` "yes" (staged by `undoLastTransfer`); the post-confirm send reply states the settlement window; `getRecentTransfers` reports live status.
+- [ ] AC-33: The confirmation summary shows the post-transfer balance, and an over-balance request still triggers the step-4 re-specify flow (unchanged).
 
 **Step 8**
 - [ ] AC-21: A long conversation is compressed to retained facts; the agent still answers correctly using retrieved facts.
@@ -337,7 +419,8 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - `account` — `Account` aggregate, Spring Data JDBC repository, balance service.
 - `contact` — `Contact` aggregate, repository, lookup service.
 - `transfer` — `Transfer` aggregate, repository, `TransferService` (transactional, atomic
-  conditional UPDATE), compensating reversal / rollback (step 7).
+  conditional UPDATE), async settlement (state machine + `@Scheduled` settler) and
+  pending-transfer cancellation (step 7).
 - `agent` — `AgentService`, Koog agent config, `MoneyTransferTools` (ToolSet), event
   handlers, custom strategy (step 4), conversation/session store, checkpointing (step 5),
   history compression (step 8), Spring AI wiring (step 10).
@@ -349,9 +432,9 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
   `TransferRepository`); Flyway migrations (`db/migration/V*.sql`) for schema + seed +
   (step 5) checkpoint tables.
 - REST: `TransferController`, `ContactController`, `AccountController`, `AgentController`
-  (`/agent/chat`, `/agent/{conversationId}/reply`, checkpoints, rollback).
+  (`/agent/chat`, `/agent/{conversationId}/reply`, checkpoints, transfer cancel).
 - Koog: `MoneyTransferTools`, `ToolRegistry`, event handlers, custom strategy,
-  checkpoint storage provider (in-memory → Postgres), rollback registry,
+  checkpoint storage provider (in-memory → Postgres), settlement scheduler + cancel flow,
   history-compression config.
 - Infra: `compose.yaml` (Postgres from step 1; `grafana/otel-lgtm` from step 6), springdoc OpenAPI.
 
@@ -384,7 +467,7 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - **Documentation (Koog teaching comments):** because this is a progressive, tutorial-style
   build, **every place Koog APIs are used** — agent construction, tool definitions
   (`@Tool`/`@LLMDescription`/`ToolSet`), event handlers (`handleEvents`), the custom
-  strategy graph, checkpoint/persistence wiring, OpenTelemetry, the rollback registry,
+  strategy graph, checkpoint/persistence wiring, OpenTelemetry, the settlement/undo tools,
   history compression, and the Spring AI integration — carries explanatory comments:
   **KDoc** on the class/function stating the Koog concept and *why* it's used, **inline
   `//` comments** at each Koog call site explaining that specific step, and a **link to the
@@ -393,8 +476,8 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - **Usage guide (final deliverable):** upon completion of the entire application (after
   step 10), the repo ships a **README usage guide** showing how to run the app (docker-compose
   up, env vars, Swagger UI) and **walk through each scenario** end-to-end: happy-path
-  transfer, ambiguous-recipient disambiguation, insufficient-balance cap-and-offer, transfer
-  undo/rollback, paused-conversation checkpoint resume, and where to see traces in the LGTM
+  transfer, ambiguous-recipient disambiguation, insufficient-balance cap-and-offer, queued
+  settlement + undo window, paused-conversation checkpoint resume, and where to see traces in the LGTM
   observability stack. Include concrete example requests (curl / Swagger) for each.
 
 ## Out of Scope
@@ -403,7 +486,10 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - Multi-currency support / FX — all balances and transfers are USD.
 - Transfer idempotency / duplicate-submit protection — a deliberate simplification: a
   repeated create-transfer request posts a **new** `Transfer`; there is no idempotency key.
-  (Undo, by contrast, *is* idempotent — see FR-16.)
+  (Undo, by contrast, is safely repeatable — a second undo loses the conditional update and
+  is rejected; see FR-16.)
+- Reversal or clawback of **settled** transfers — settlement is terminal by design
+  (FR-16/FR-20); undo exists only during the pending window.
 - A rich custom frontend beyond Swagger UI (unless requested later).
 - Production hardening (rate limiting, secrets management beyond env vars, HA, DB failover).
 
@@ -429,8 +515,9 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - **OQ-6 → RESOLVED (Approach B):** Install Koog's checkpoint/persistence feature at
   **step 3** behind an **in-memory storage provider**; at **step 5** swap the provider to a
   **Postgres-backed** one — no change to the HITL interaction seam. Agent and custom-strategy
-  state must be `kotlinx.serialization`-serializable from step 3 onward. This pre-wires step 7
-  rollback (undo restores/compensates from the same checkpoints). Exact Koog persistence API
+  state must be `kotlinx.serialization`-serializable from step 3 onward. (Superseded at step-7
+  design: undo is a **domain-level cancel of `PENDING` transfers** — FR-16/FR-20 — not
+  checkpoint-based.) Exact Koog persistence API
   names to be confirmed against Koog docs (via Context7) when planning steps 3/5.
 - **OQ-7 → RESOLVED (persist domain data):** Accounts, balances, transfers, and contacts are
   persisted in **PostgreSQL from step 1** using **Spring Data JDBC + Flyway**, with Postgres
@@ -470,3 +557,6 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 | 2026-07-01 | Switched LLM setup to `MultiLLMPromptExecutor`: Anthropic Sonnet 5 default + Opus 4.8 for hard calls, automatic error-fallback to OpenAI `gpt-5.4` (updates OQ-4, FR-06/07, AC-09; adds AC-28). |
 | 2026-07-01 | Adopted per-step README pattern: each step's PR adds a README usage section for its capability, growing incrementally toward AC-27 (Delivery Strategy + AC-27 reworded + AC-29). |
 | 2026-07-01 | Refined domain to Venmo-style (OQ-8, FR-01/02/04/08): `Account` is profile+wallet source of truth; `Contact` is a thin edge (`linkedAccountId` → `contactAccountId`, + `nickname`), no duplicated name/phone. Added `docs/data-model.md` (ER diagram). |
+| 2026-07-03 | Expanded FR-15 (step 6 observability): Koog OpenTelemetry feature installed in the shared agent builder (strategy-agnostic, so a future custom graph yields node/subgraph spans for free) + Spring Actuator/Micrometer OTLP export to the LGTM stack; added AC-19b/AC-19c and a no-op-without-endpoint safety rule. Koog OTel module confirmed transitive via `koog-agents`. |
+| 2026-07-04 | Step 7 redesigned: async settlement (FR-20 — `PENDING → SETTLED\|CANCELLED\|FAILED`, `@Scheduled` settler, `app.transfer.settlement-delay`); undo restricted to pending transfers, settled is irreversible (FR-16 rewritten); agent tools `undoLastTransfer`/`getRecentTransfers` via the existing confirm gate (FR-21); advisory balance hint (FR-22). AC-20 rewritten; AC-30–33 added. |
+| 2026-07-04 | Added the technology-free **Transfer Lifecycle (domain view)** section (L0–L10) mapping each domain step to its FR or out-of-scope decision; made explicit that step 7 splits the single debit+credit transaction into debit-and-record (confirm) + credit (settlement). Noted step 7 stays on `singleRunStrategy` (no custom graph). |
