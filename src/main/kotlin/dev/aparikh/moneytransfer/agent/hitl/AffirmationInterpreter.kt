@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.hitl
 
 import org.springframework.stereotype.Component
 

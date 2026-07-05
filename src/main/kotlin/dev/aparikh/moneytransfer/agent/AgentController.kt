@@ -21,14 +21,28 @@ data class ReplyRequest(
 )
 
 /**
+ * How the conversation's most recent **agent run** ended, derived from Koog's `Persistence`
+ * checkpoints (the workshop-style tombstone probe): on clean completion Koog writes a terminal
+ * "tombstone" checkpoint, so the latest checkpoint's shape tells the story without any extra
+ * bookkeeping.
+ * - [NONE] — no checkpoints: no agent run yet (reply-only turns don't run the agent).
+ * - [COMPLETED] — the latest checkpoint is the tombstone: the last run finished cleanly.
+ * - [INTERRUPTED] — a mid-run checkpoint is the latest: the last run died in flight (crash,
+ *   provider failure on the final fallback) and never tombstoned.
+ */
+enum class LastRunState { NONE, COMPLETED, INTERRUPTED }
+
+/**
  * A read-only snapshot of a conversation's durable state (FR-14). [turns] is the number of user
  * messages held in `ChatMemory`; [awaiting] is what the conversation is currently paused on
- * (`CLARIFICATION`/`CONFIRMATION`), or null if nothing is pending.
+ * (`CLARIFICATION`/`CONFIRMATION`), or null if nothing is pending; [lastRun] is how the most
+ * recent agent run ended, from the checkpoint tombstone.
  */
 data class ConversationStatusResponse(
     val conversationId: UUID,
     val turns: Int,
     val awaiting: InteractionType?,
+    val lastRun: LastRunState,
 )
 
 /**

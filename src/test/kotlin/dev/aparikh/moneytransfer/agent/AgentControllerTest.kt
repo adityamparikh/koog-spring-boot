@@ -1,10 +1,12 @@
 package dev.aparikh.moneytransfer.agent
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import dev.aparikh.moneytransfer.agent.hitl.ContactCandidate
 import dev.aparikh.moneytransfer.common.GlobalExceptionHandler
 import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import io.mockk.coEvery
 import io.mockk.mockk
+import java.util.UUID
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
@@ -20,7 +22,6 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.request
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import java.util.UUID
 
 /**
  * Web-layer test for [AgentController] with a mocked [AgentService] — verifies HTTP wiring and
@@ -111,9 +112,9 @@ class AgentControllerTest {
     }
 
     @Test
-    fun `status reports turn count and what the conversation awaits`() {
+    fun `status reports turn count, what the conversation awaits, and the last run state`() {
         coEvery { agentService.status(conversationId) } returns
-            ConversationStatusResponse(conversationId, turns = 3, awaiting = InteractionType.CONFIRMATION)
+            ConversationStatusResponse(conversationId, turns = 3, awaiting = InteractionType.CONFIRMATION, lastRun = LastRunState.COMPLETED)
 
         val async = mockMvc.perform(get("/api/v1/agent/$conversationId/status"))
             .andExpect(request().asyncStarted()).andReturn()
@@ -122,5 +123,6 @@ class AgentControllerTest {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.turns").value(3))
             .andExpect(jsonPath("$.awaiting").value("CONFIRMATION"))
+            .andExpect(jsonPath("$.lastRun").value("COMPLETED"))
     }
 }

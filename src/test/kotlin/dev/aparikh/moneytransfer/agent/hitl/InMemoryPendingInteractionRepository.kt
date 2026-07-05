@@ -1,4 +1,4 @@
-package dev.aparikh.moneytransfer.agent
+package dev.aparikh.moneytransfer.agent.hitl
 
 import java.time.Instant
 import java.util.UUID

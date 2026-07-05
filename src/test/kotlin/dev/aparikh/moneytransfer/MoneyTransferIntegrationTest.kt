@@ -3,6 +3,7 @@ package dev.aparikh.moneytransfer
 import com.fasterxml.jackson.databind.ObjectMapper
 import dev.aparikh.moneytransfer.account.AccountRepository
 import dev.aparikh.moneytransfer.transfer.TransferRequest
+import dev.aparikh.moneytransfer.transfer.TransferService
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -45,6 +46,9 @@ class MoneyTransferIntegrationTest {
     @Autowired
     lateinit var accounts: AccountRepository
 
+    @Autowired
+    lateinit var transferService: TransferService
+
     companion object {
         @Container
         @ServiceConnection
@@ -58,21 +62,74 @@ class MoneyTransferIntegrationTest {
     }
 
     @Test
-    fun `happy path transfer persists updated balances`() {
+    fun `happy path transfer reserves funds as PENDING, then settlement credits the recipient`() {
         val body = objectMapper.writeValueAsString(
             TransferRequest(recipientAccountId = 2, amount = BigDecimal("100.00"), purpose = "lunch"),
         )
 
-        mockMvc.perform(
+        // Step 7 contract change: create no longer settles — it debits the sender and queues
+        // the transfer as PENDING (funds reservation); the recipient is credited at settlement.
+        val response = mockMvc.perform(
             post("/api/v1/transfers")
                 .header("X-User-Id", "1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body),
         )
             .andExpect(status().isCreated)
-            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andExpect(jsonPath("$.status").value("PENDING"))
+            .andExpect(jsonPath("$.settleAt").exists())
+            .andReturn()
 
-        // Read back from the database to confirm the balances were persisted.
+        assertEquals(0, accounts.findById(1).get().balance.compareTo(BigDecimal("900.00")), "sender debited immediately")
+        assertEquals(0, accounts.findById(2).get().balance.compareTo(BigDecimal("500.00")), "recipient untouched while PENDING")
+
+        // Drive settlement directly (the scheduler owns *when*; settle owns *what happens*).
+        val transferId = objectMapper.readTree(response.response.contentAsString)["id"].asLong()
+        transferService.settle(transferId)
+
+        assertEquals(0, accounts.findById(2).get().balance.compareTo(BigDecimal("600.00")), "recipient credited at settlement")
+    }
+
+    @Test
+    fun `cancelling a pending transfer refunds the sender - cancelling again is 409`() {
+        val body = objectMapper.writeValueAsString(
+            TransferRequest(recipientAccountId = 2, amount = BigDecimal("100.00"), purpose = "oops"),
+        )
+        val response = mockMvc.perform(
+            post("/api/v1/transfers").header("X-User-Id", "1").contentType(MediaType.APPLICATION_JSON).content(body),
+        ).andExpect(status().isCreated).andReturn()
+        val transferId = objectMapper.readTree(response.response.contentAsString)["id"].asLong()
+
+        mockMvc.perform(post("/api/v1/transfers/$transferId/cancel").header("X-User-Id", "1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
+
+        assertEquals(0, accounts.findById(1).get().balance.compareTo(BigDecimal("1000.00")), "sender refunded")
+        assertEquals(0, accounts.findById(2).get().balance.compareTo(BigDecimal("500.00")), "recipient never touched")
+
+        mockMvc.perform(post("/api/v1/transfers/$transferId/cancel").header("X-User-Id", "1"))
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.title").value("Transfer not cancellable"))
+    }
+
+    @Test
+    fun `a settled transfer cannot be cancelled`() {
+        val body = objectMapper.writeValueAsString(
+            TransferRequest(recipientAccountId = 2, amount = BigDecimal("100.00"), purpose = "final"),
+        )
+        val response = mockMvc.perform(
+            post("/api/v1/transfers").header("X-User-Id", "1").contentType(MediaType.APPLICATION_JSON).content(body),
+        ).andExpect(status().isCreated).andReturn()
+        val transferId = objectMapper.readTree(response.response.contentAsString)["id"].asLong()
+
+        transferService.settle(transferId)
+
+        mockMvc.perform(post("/api/v1/transfers/$transferId/cancel").header("X-User-Id", "1"))
+            .andExpect(status().isConflict)
+            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+            .andExpect(jsonPath("$.title").value("Transfer not cancellable"))
+
+        // Settlement stands: no refund happened.
         assertEquals(0, accounts.findById(1).get().balance.compareTo(BigDecimal("900.00")))
         assertEquals(0, accounts.findById(2).get().balance.compareTo(BigDecimal("600.00")))
     }

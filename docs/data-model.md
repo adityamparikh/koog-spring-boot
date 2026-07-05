@@ -9,10 +9,12 @@ JDBC**. Money is `BigDecimal` / `NUMERIC(19,2)`; currency is USD throughout.
 |-----------|------|-----------|
 | **Account** | A person's profile **and** wallet. The single source of truth for display info and balance. The `id` *is* the person's identity (no separate user table). | `id`, `firstName`, `lastName?`, `phoneNumber?`, `currency`, `balance` |
 | **Contact** | A directed edge in an owner's address book — Venmo-"friend" style. References another account; does **not** copy its name/phone. | `id`, `ownerAccountId`, `contactAccountId`, `nickname?` |
-| **Transfer** | An immutable ledger row recording money moved between two accounts. | `id`, `senderAccountId`, `recipientAccountId`, `amount`, `currency`, `purpose?`, `status`, `createdAt` |
+| **Transfer** | An immutable ledger row recording money moved between two accounts. | `id`, `senderAccountId`, `recipientAccountId`, `amount`, `currency`, `purpose?`, `status`, `createdAt`, `settleAt?` |
 
-`TransferStatus` (enum, stored as text): `COMPLETED` · `REVERSED` · `REVERSAL` (the latter two
-are used from step 7 / undo).
+`TransferStatus` (enum, stored as text): `PENDING` · `SETTLED` · `CANCELLED` · `FAILED` (step 7 —
+async settlement). `PENDING` is the only non-terminal state: the sender is debited, the recipient
+not yet credited; `settle_at` says when the settler may credit it, and until then it can be
+cancelled. `SETTLED` is final and irreversible.
 
 ## Relationships
 
@@ -90,6 +92,6 @@ compatibility): `account.balance` `CHECK (balance >= 0)`; `transfer.amount` `CHE
 
 ## Evolution across steps
 
-This model grows in later branches: **Koog checkpoint/agent-state** tables (step 5), and undo
-posts a compensating `Transfer` with `status = REVERSAL` and marks the original `REVERSED`
-(step 7). This document is updated as those land.
+This model grew across branches: **Koog checkpoint/agent-state** tables landed at step 5, and
+step 7 made `Transfer` a state machine (`settle_at` column, async settlement, undo-while-pending —
+settled transfers are never reversed). This document is updated as the model evolves.

@@ -1,15 +1,17 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step6-observability`) is step 6:
-the agent is traced with Koog's `OpenTelemetry` feature, exporting a span per run / LLM call / tool
-call over OTLP to Grafana's LGTM stack (run locally via docker-compose).**
+branch that adds one capability (see `feature.md`). **This branch (`step7-rollback`) is step 7:
+transfers now settle asynchronously — confirming debits the sender and queues the transfer as
+`PENDING`; a scheduled settler credits the recipient after the settlement window, and until it
+does, the transfer can be undone.**
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
 > covers **step 1** (money-transfer REST), **step 2** (AI agent chat), **step 3** (agent tools &
 > human-in-the-loop), **step 4** (balance & overdraft protection), **step 5** (durable
-> persistence), and **step 6** (OpenTelemetry observability).
+> persistence), **step 6** (OpenTelemetry observability), and **step 7** (async settlement &
+> undo).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -112,7 +114,7 @@ curl -s -X POST http://localhost:8080/api/v1/transfers \
 # → 404, title "Account not found"
 ```
 
-**7. List your transfers (most recent first)**
+**7. List your transfers (sent and received, most recent first — received arrive at step 7 settlement)**
 ```bash
 curl -s http://localhost:8080/api/v1/transfers -H "X-User-Id: 1"
 ```
@@ -313,6 +315,77 @@ open http://localhost:3000
 > one-line adapters for **Langfuse** and **W&B Weave** (`addLangfuseExporter`/`addWeaveExporter`) if
 > you prefer an LLM-native trace view over Grafana.
 
+## Step 7 — Async settlement & undo
+Step 7 splits the single debit+credit transaction into the two steps real rails have:
+**confirming debits the sender immediately and records the transfer as `PENDING`** (funds are
+reserved, so your available balance is always honest), and a **scheduled settler credits the
+recipient** once the settlement window passes (`app.transfer.settlement-delay`, default 2
+minutes). That window **is** the undo window — the "undo send" model:
+
+- A `PENDING` transfer can be cancelled: the sender is refunded, the recipient never sees it.
+- A `SETTLED` transfer is **final** — it can never be reversed.
+- A racing cancel and settle are decided by one atomic conditional
+  `UPDATE … WHERE status = 'PENDING'` — exactly one writer wins, the loser moves no money.
+
+The agent gains two tools — `getRecentTransfers` ("did it go through?") and `undoLastTransfer` —
+and undo runs through the **same confirm gate** as sends: the tool only stages; the cancel
+executes app-side after your "yes". The confirmation summary now also shows your balance-after,
+and the system prompt carries your live balance (both advisory — the atomic debit remains the
+only enforcement).
+
+**12. Send, check status, and undo within the window**
+```bash
+# 1) Send via the agent and confirm (steps 3–5 flow). The reply now says "Queued", not "Done".
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "send 50 to Alice for lunch"}'
+# → {"type":"CONFIRMATION","transferSummary":"Send $50 to Alice Smith for \"lunch\" (balance after: $950.00)", ...}
+
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" -d '{"answer": "yes"}'
+# → {"type":"ANSWER","reply":"Queued — $50.00 to Alice Smith settles in about 2 minutes; say \"undo\" before then to cancel."}
+
+# 2) Ask for status — the transfer is PENDING until the settler runs.
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "did my transfer go through?", "conversationId": "<id>"}'
+# → mentions the PENDING transfer and when it settles
+
+# 3) Undo it — the cancellation itself needs a confirmation ("yes").
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "actually, undo that", "conversationId": "<id>"}'
+# → {"type":"CONFIRMATION","transferSummary":"Cancel your $50.00 transfer to Alice Smith for \"lunch\"", ...}
+
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" -d '{"answer": "yes"}'
+# → {"type":"ANSWER","reply":"Done — cancelled the transfer; the money is back in your balance."}
+```
+
+**13. After the window, undo is honestly refused**
+```bash
+# Wait ~2 minutes (or watch getRecentTransfers flip to SETTLED), then:
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "undo my last transfer"}'
+# → "...There is no pending transfer to undo. Settled transfers are final..."
+```
+
+**14. The same lifecycle over plain REST**
+```bash
+# Create: 201 with status PENDING and a settleAt timestamp; sender debited at once.
+curl -s -X POST http://localhost:8080/api/v1/transfers \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"recipientAccountId": 2, "amount": 100.00, "purpose": "rent"}'
+# → {"id": <tid>, "status": "PENDING", "settleAt": "...", ...}
+
+# Cancel within the window: 200, status CANCELLED, sender refunded.
+curl -s -X POST http://localhost:8080/api/v1/transfers/<tid>/cancel -H "X-User-Id: 1"
+
+# Cancel after settlement instead → 409 application/problem+json,
+# title "Transfer not cancellable" — settled is final by design.
+```
+
 ## What's next
-Later branches add: transfer rollback (step 7), history compression (step 8), fuller tests (step 9),
+Later branches add: history compression (step 8), fuller tests (step 9),
 and a Spring AI refactor (step 10). See `feature.md` for the full roadmap.
