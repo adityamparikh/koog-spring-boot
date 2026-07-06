@@ -7,6 +7,7 @@ import ai.koog.agents.snapshot.feature.tombstoneCheckpoint
 import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
 import ai.koog.agents.testing.tools.getMockExecutor
 import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
+import dev.aparikh.moneytransfer.agent.config.HistoryCompressionProperties
 import dev.aparikh.moneytransfer.agent.config.ObservabilityProperties
 import dev.aparikh.moneytransfer.agent.hitl.Affirmation
 import dev.aparikh.moneytransfer.agent.hitl.AffirmationInterpreter
@@ -55,6 +56,7 @@ class AgentServiceTest {
     private val service = AgentService(
         executor, chatHistory, checkpointStorage, pending, contactService, accountService, transferService,
         TransferProperties(), interpreter, ObservabilityProperties(), properties = AgentModelProperties(),
+        historyCompression = HistoryCompressionProperties(),
     )
 
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000aa")

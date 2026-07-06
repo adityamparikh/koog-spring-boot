@@ -386,6 +386,47 @@ curl -s -X POST http://localhost:8080/api/v1/transfers/<tid>/cancel -H "X-User-I
 # title "Transfer not cancellable" — settled is final by design.
 ```
 
+## Step 8 — History compression
+Step 8 replaces `ChatMemory`'s blind `windowSize(50)` truncation with **smart compression**: once
+a conversation's transcript passes `app.agent.history-compression.max-messages` (default 20), the
+agent's turn strategy (Koog's `singleRunStrategyWithHistoryCompression`) extracts two named facts
+— *which contact an ambiguous name most recently resolved to*, and *the recent conversation
+topic* — and replaces the older messages with them, instead of silently dropping the oldest ones.
+Nothing about the agent's authoritative state changes: the ledger and any pending confirmation
+are still re-queried live via tools every turn; compression only affects the model's own
+conversational memory.
+
+**15. A long conversation still remembers who "they" are**
+```bash
+# 1) Disambiguate, so the resolved-recipient fact has something to extract.
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "send 10 to Daniel for coffee"}'
+# → {"type":"CLARIFICATION", "candidates":[...two Daniels...], "conversationId":"<id>"}
+
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" -d '{"answer": "Daniel Craig"}'
+# → {"type":"CONFIRMATION","transferSummary":"Send $10 to Daniel Craig for \"coffee\"...", ...}
+
+curl -s -X POST http://localhost:8080/api/v1/agent/<id>/reply \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" -d '{"answer": "yes"}'
+# → {"type":"ANSWER","reply":"Queued — $10.00 to Daniel Craig settles in about 2 minutes; ..."}
+
+# 2) Keep chatting past the compression threshold (default 20 messages, ~10 turns) — e.g. a few
+#    unrelated balance checks or "what are my recent transfers?" questions. Somewhere in there,
+#    the first turn that both calls a tool and crosses the threshold triggers compression: the
+#    resolved-recipient and recent-topic facts replace the older messages.
+
+# 3) Much later in the same conversation, refer back without repeating the name:
+curl -s -X POST http://localhost:8080/api/v1/agent/chat \
+  -H "X-User-Id: 1" -H "Content-Type: application/json" \
+  -d '{"message": "send them another 5 for the tip", "conversationId": "<id>"}'
+# → still resolves to Daniel Craig — the compressed history retained who "them" was
+```
+
+Compression is additive — set `app.agent.history-compression.enabled=false` and the agent falls
+back to `ChatMemory`'s plain `windowSize(50)` truncation, same as steps 3–7.
+
 ## What's next
-Later branches add: history compression (step 8), fuller tests (step 9),
-and a Spring AI refactor (step 10). See `feature.md` for the full roadmap.
+Later branches add: fuller tests (step 9), and a Spring AI refactor (step 10). See `feature.md`
+for the full roadmap.

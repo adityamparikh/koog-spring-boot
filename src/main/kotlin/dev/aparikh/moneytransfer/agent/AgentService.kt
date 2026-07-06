@@ -3,7 +3,14 @@ package dev.aparikh.moneytransfer.agent
 import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
 import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.singleRunStrategy
+import ai.koog.agents.core.dsl.extension.Concept
+import ai.koog.agents.core.dsl.extension.FactRetrievalHistoryCompressionStrategy
+import ai.koog.agents.core.dsl.extension.FactType
+import ai.koog.agents.core.dsl.extension.HistoryCompressionStrategy
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.ext.agent.HistoryCompressionConfig
+import ai.koog.agents.ext.agent.singleRunStrategyWithHistoryCompression
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.agents.features.opentelemetry.feature.OpenTelemetry
 import ai.koog.agents.snapshot.feature.Persistence
@@ -21,6 +28,7 @@ import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import ai.koog.prompt.message.ResponseMetaInfo
 import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
+import dev.aparikh.moneytransfer.agent.config.HistoryCompressionProperties
 import dev.aparikh.moneytransfer.agent.config.ObservabilityProperties
 import dev.aparikh.moneytransfer.agent.hitl.Affirmation
 import dev.aparikh.moneytransfer.agent.hitl.AffirmationInterpreter
@@ -87,8 +95,10 @@ data class ChatResponse(
  *
  * Each `/chat` turn builds an [AIAgent] with a per-request [MoneyTransferTools] `ToolSet`
  * (registered via `ToolRegistry`), `handleEvents { … }` for observability, and the step-2
- * multi-LLM fallback loop (Anthropic → OpenAI). The default `singleRunStrategy()` drives the
- * LLM↔tool loop until the model produces a text answer. https://docs.koog.ai/tools-overview/
+ * multi-LLM fallback loop (Anthropic → OpenAI). [turnStrategy] drives the LLM↔tool loop until the
+ * model produces a text answer — `singleRunStrategy()`, or, since step 8,
+ * `singleRunStrategyWithHistoryCompression()` when history compression is enabled.
+ * https://docs.koog.ai/tools-overview/
  *
  * **Durable state (step 5) uses Koog's built-in constructs**, keyed by `conversationId` (passed as
  * each run's `sessionId`):
@@ -98,6 +108,9 @@ data class ChatResponse(
  *  - `Persistence` (over [checkpointStorage], a Postgres provider) checkpoints each run for
  *    intra-run crash recovery. Completed runs tombstone, so a *finished* turn is never replayed —
  *    cross-turn continuity is ChatMemory's job, not Persistence's.
+ *
+ * **History compression (step 8)** keeps that stored transcript bounded with retained facts
+ * instead of `ChatMemory`'s `windowSize` blindly truncating it — see [turnStrategy].
  *
  * HITL stays app-side because Koog has no cross-turn "pending decision" construct: `prepareTransfer`
  * only *stages* a transfer into the (now Postgres-backed) [PendingInteractionStore], and `reply(...)`
@@ -127,6 +140,7 @@ class AgentService(
     private val spanExporter: SpanExporter? = null,
     private val metricExporter: MetricExporter? = null,
     properties: AgentModelProperties,
+    private val historyCompression: HistoryCompressionProperties,
 ) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -336,61 +350,70 @@ class AgentService(
      * This is the densest cluster of Koog concepts in the app; each call site is annotated below.
      */
     private suspend fun runAgent(accountId: Long, conversationId: UUID, model: LLModel, input: String, balance: BigDecimal): String {
-        // 1. Our ToolSet. Built fresh per request so the acting accountId/conversationId are
-        //    captured as fields — never LLM-supplied arguments (that would be an injection risk).
+        /*
+         * 1. Our ToolSet. Built fresh per request so the acting accountId/conversationId are
+         *    captured as fields — never LLM-supplied arguments (that would be an injection risk).
+         */
         val tools = MoneyTransferTools(accountId, conversationId, contactService, accountService, transferService, pending)
-
-        // 2. Koog ToolRegistry: `tools(instance)` reflects the @Tool methods into Tool objects
-        //    (via ToolSet.asTools()) and registers them for the agent. https://docs.koog.ai/tools-overview/
+        /*
+         * 2. Koog ToolRegistry: `tools(instance)` reflects the @Tool methods into Tool objects
+         *    (via ToolSet.asTools()) and registers them for the agent. https://docs.koog.ai/tools-overview/
+         */
         val registry = ToolRegistry { tools(tools) }
-
-        // 3. Koog AIAgent: a runnable agent over a PromptExecutor + model. We pass the aggregate
-        //    multiLLMPromptExecutor (so this model's provider is routed to) and the tool registry.
-        //    With no explicit strategy it uses singleRunStrategy() — the loop that repeatedly calls
-        //    the LLM, executes any tools it requests, feeds the results back, and stops when the LLM
-        //    returns plain text. https://docs.koog.ai/single-run-agents/
+        /*
+         * 3. Koog AIAgent: a runnable agent over a PromptExecutor + model. We pass the aggregate
+         *    multiLLMPromptExecutor (so this model's provider is routed to) and the tool registry.
+         */
         val agent = AIAgent(
             promptExecutor = multiLLMPromptExecutor,
             llmModel = model,
+            strategy = turnStrategy(model),
             toolRegistry = registry,
             systemPrompt = systemPrompt(accountId, balance),
         ) {
-            // 4. Koog event handlers (FR-09): observe every LLM and tool call as the run unfolds.
-            //    Here we just log; the same hooks feed tracing/metrics in step 6. https://docs.koog.ai/agent-events/
+            /*
+             * 4. Koog event handlers (FR-09): observe every LLM and tool call as the run unfolds.
+             *    Here we just log; the same hooks feed tracing/metrics in step 6. https://docs.koog.ai/agent-events/
+             */
             handleEvents {
                 onLLMCallStarting { e -> logger.debug("LLM call starting on {} with {} tools", e.model.id, e.tools.size) }
                 onLLMCallCompleted { e -> logger.debug("LLM call completed: {}", e.response?.textContent()?.take(200)) }
                 onToolCallStarting { e -> logger.info("tool → {} args={}", e.toolName, e.toolArgs) }
                 onToolCallCompleted { e -> logger.info("tool ← {} result={}", e.toolName, e.toolResult) }
             }
-
-            // 5. Koog ChatMemory (step 5): the transcript. At run start it loads prior turns for this
-            //    sessionId and injects them into the prompt; at completion it stores the updated
-            //    transcript back to Postgres. windowSize bounds how many messages are kept.
-            //    https://docs.koog.ai/agent-persistency/
+            /*
+             * 5. Koog ChatMemory (step 5): the transcript. At run start it loads prior turns for this
+             *    sessionId and injects them into the prompt; at completion it stores the updated
+             *    transcript back to Postgres. windowSize bounds how many messages are kept — a hard
+             *    backstop that a healthy conversation should rarely reach now that step 8's history
+             *    compression (see [turnStrategy]) keeps it bounded well before this cutoff.
+             *    https://docs.koog.ai/agent-persistency/
+             */
             install(ChatMemory) {
                 chatHistoryProvider = chatHistory
                 windowSize(MEMORY_WINDOW)
             }
-
-            // 6. Koog Persistence (step 5): checkpoints each node for intra-run crash recovery, keyed
-            //    by the same sessionId. Completed runs tombstone, so a finished turn is not replayed —
-            //    only a run interrupted mid-flight resumes. Money never moves inside the run (tools
-            //    only stage), so a resumed run re-stages harmlessly rather than double-sending.
+            /*
+             * 6. Koog Persistence (step 5): checkpoints each node for intra-run crash recovery, keyed
+             *    by the same sessionId. Completed runs tombstone, so a finished turn is not replayed —
+             *    only a run interrupted mid-flight resumes. Money never moves inside the run (tools
+             *    only stage), so a resumed run re-stages harmlessly rather than double-sending.
+             */
             install(Persistence) {
                 storage = checkpointStorage
                 enableAutomaticPersistence = true
             }
-
-            // 7. Koog OpenTelemetry (step 6): emits a span per agent run / LLM call / tool call (and,
-            //    for a future custom strategy graph, per node/subgraph — the feature hooks the
-            //    pipeline, not the strategy) → Tempo, plus GenAI metrics (token usage, latency,
-            //    tool-call counts) → Mimir, exported via OTLP to grafana/otel-lgtm. Installed only when
-            //    observability is enabled. https://docs.koog.ai/opentelemetry-support/
-            //    Do NOT setVerbose(true): this is a money app; verbose emits prompt/response content
-            //    (amounts, contact names, balances) unmasked into the spans. Known limitation: Koog
-            //    builds an OTel SDK per install and we build an agent per request — see
-            //    docs/notes/observability.md ("per-request SDK") for the leak and the step-7 fix.
+            /*
+             * 7. Koog OpenTelemetry (step 6): emits a span per agent run / LLM call / tool call (and,
+             *    per node/subgraph now that [turnStrategy] can return a graph strategy — the feature
+             *    hooks the pipeline, not the strategy shape) → Tempo, plus GenAI metrics (token usage,
+             *    latency, tool-call counts) → Mimir, exported via OTLP to grafana/otel-lgtm. Installed
+             *    only when observability is enabled. https://docs.koog.ai/opentelemetry-support/
+             *    Do NOT setVerbose(true): this is a money app; verbose emits prompt/response content
+             *    (amounts, contact names, balances) unmasked into the spans. Known limitation: Koog
+             *    builds an OTel SDK per install and we build an agent per request — see
+             *    docs/notes/observability.md ("per-request SDK") for the leak and the step-7 fix.
+             */
             if (spanExporter != null || metricExporter != null) {
                 install(OpenTelemetry) {
                     setServiceInfo(observability.serviceName, observability.serviceVersion)
@@ -399,12 +422,56 @@ class AgentService(
                 }
             }
         }
-
-        // 8. Run the turn. The conversationId is the run's sessionId — ChatMemory and Persistence
-        //    both scope to it. singleRunStrategy drives LLM↔tool iterations internally; `run`
-        //    suspends until the agent produces its final text answer, which we return.
+        /*
+         * 8. Run the turn. The conversationId is the run's sessionId — ChatMemory and Persistence
+         *    both scope to it. The turn strategy drives LLM↔tool iterations internally; `run`
+         *    suspends until the agent produces its final text answer, which we return.
+         */
         return agent.run(input, conversationId.toString())
     }
+
+    /**
+     * The per-turn agent strategy (step 8): [model] — the attempt's own model — drives both the
+     * LLM↔tool loop and, when history compression is enabled, the fact-extraction call.
+     *
+     * Koog's `singleRunStrategyWithHistoryCompression` is a **ready-made** graph strategy — a
+     * drop-in replacement for the implicit `singleRunStrategy()` we used through step 7 — that
+     * inserts a history-compression node after each tool call, firing only once
+     * [HistoryCompressionProperties.maxMessages] is exceeded. Because `ChatMemory` (above) loads
+     * the full Postgres-stored transcript into this run's prompt at the start and stores the
+     * run's final prompt back at completion, compressing mid-run is what keeps the **stored**
+     * transcript bounded across turns, not just this run's in-memory one.
+     *
+     * [FactRetrievalHistoryCompressionStrategy] (over [HistoryCompressionStrategy]'s other,
+     * blunter strategies) extracts named [Concept]s instead of a generic prose summary or a
+     * blind truncation — the only strategy that names *what* to keep. Only two concepts are
+     * defined: this app's authoritative state (the ledger, pending confirmations) already lives
+     * in Postgres and is re-queried live via tools every turn, so chat history only needs to
+     * carry conversational continuity, not facts a tool could answer more reliably.
+     *
+     * https://docs.koog.ai/history-compression
+     */
+    private fun turnStrategy(model: LLModel) =
+        if (historyCompression.enabled) {
+            singleRunStrategyWithHistoryCompression(
+                HistoryCompressionConfig(
+                    isHistoryTooBig = { prompt -> prompt.messages.size > historyCompression.maxMessages },
+                    compressionStrategy = FactRetrievalHistoryCompressionStrategy(
+                        concepts = HISTORY_CONCEPTS,
+                        // Bounds the no-facts-extracted case (e.g. a balance-only chat that never
+                        // resolves a recipient) instead of the strategy's own NoCompression default,
+                        // which would leave an oversized prompt untouched until windowSize truncates it.
+                        fallback = HistoryCompressionStrategy.FromLastNMessages(FALLBACK_MESSAGE_COUNT),
+                    ),
+                    // The attempt's own model, not a separate hardcoded one — a hardcoded model could
+                    // fail if only one provider's key is configured, defeating AgentService's
+                    // Anthropic→OpenAI fallback loop in chat().
+                    retrievalModel = model,
+                ),
+            )
+        } else {
+            singleRunStrategy()
+        }
 
     /** Tags a completed run by inspecting what (if anything) it left pending. */
     private fun tag(reply: String, conversationId: UUID): ChatResponse {
@@ -470,5 +537,31 @@ class AgentService(
     private companion object {
         /** Sliding window of messages ChatMemory keeps per conversation. */
         const val MEMORY_WINDOW = 50
+
+        /** Messages kept when [turnStrategy]'s compression extracts no facts for either concept. */
+        const val FALLBACK_MESSAGE_COUNT = 10
+
+        /**
+         * The facts step 8's history compression preserves — deliberately narrow (see
+         * [turnStrategy]'s KDoc): only what chat history alone would otherwise lose, not anything
+         * a tool already answers authoritatively.
+         */
+        val HISTORY_CONCEPTS = listOf(
+            Concept(
+                keyword = "resolved_recipient",
+                description = "The contact (display name and contactId) the user most recently " +
+                    "confirmed or resolved as the transfer recipient, especially after " +
+                    "disambiguating an ambiguous name (e.g. choosing 'Daniel Craig' for 'Daniel'). " +
+                    "Needed so a later message like 'send them another $20' can still resolve.",
+                factType = FactType.SINGLE,
+            ),
+            Concept(
+                keyword = "recent_topic",
+                description = "A brief note on what the user has been discussing or asking about " +
+                    "in this conversation (amounts mentioned, purposes, any unresolved question) — " +
+                    "general conversational continuity, not ledger state.",
+                factType = FactType.SINGLE,
+            ),
+        )
     }
 }

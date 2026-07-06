@@ -1,157 +1,131 @@
-# Implementation Plan: Async Settlement + Undo (Step 7 — `step7-rollback`)
+# Implementation Plan: History Compression (Step 8 — `step8-history-compression`)
 
-> Scope: **Step 7** of `feature.md` (FR-16, FR-20, FR-21, FR-22; AC-20, AC-30–33). Split the
-> single debit+credit transaction into *debit-and-record at confirm* + *credit at settlement*
-> (lifecycle L5/L6), add the undo window while `PENDING`, surface it to the agent, and add the
-> advisory balance hint. Branch `step7-rollback` off `step6-observability`.
+> Scope: **Step 8** of `feature.md` (FR-17; AC-21). Enable Koog history compression so long
+> conversations are summarized into retained facts rather than growing unboundedly. Branch
+> `step8-history-compression` off `main` (post step-7 merge).
 
 ## Overview
-`TransferService.transfer` (one transaction: debit + credit + `COMPLETED` row) becomes three
-operations on a transfer state machine:
+Today `ChatMemory`'s `windowSize(50)` (`AgentService.MEMORY_WINDOW`) is the *only* bound on a
+conversation's stored transcript — a hard cutoff that silently drops the oldest messages once the
+window fills. That can drop the very message that resolved an ambiguous recipient ("which Daniel")
+many turns before the user references them again. Step 8 replaces blind truncation with **smart
+compression**: once the transcript crosses a lower threshold, Koog's history-compression feature
+runs an LLM pass that extracts a small set of named facts and replaces the old messages with a
+compact summary. `windowSize(50)` stays as an outer safety net, but compression should fire well
+before it does.
 
-- **`initiate`** — atomic debit (existing conditional UPDATE) + insert `PENDING` row with
-  `settle_at = now + delay`, one transaction. Called from the REST create endpoint and from the
-  agent confirm gate. Funds are reserved; available balance stays honest.
-- **`settle`** — a `@Scheduled` settler polls `PENDING` rows past `settle_at`; per row, in one
-  transaction: conditional flip `PENDING → SETTLED` + credit recipient. Recipient gone →
-  `PENDING → FAILED` + re-credit sender. The Postgres table *is* the work queue (outbox style).
-- **`cancel`** — conditional flip `PENDING → CANCELLED` + re-credit sender. `SETTLED` is
-  terminal — never reversed. The cancel-vs-settle race is decided by
-  `WHERE status = 'PENDING'`: one writer wins, the loser no-ops.
-
-The domain split applies to **all** transfers (REST and agent) — the REST create response now
-returns a `PENDING` transfer. The HITL boundary is untouched; only what happens after "yes"
-changes. **No custom strategy graph** — `singleRunStrategy` stays (see the spec's strategy
-note and `docs/notes/custom-strategies.md`).
+Koog ships this as a **ready-made strategy**, `singleRunStrategyWithHistoryCompression(config)` —
+a drop-in `strategy` argument to the same `AIAgent(...)` factory `AgentService` already calls, not
+a hand-authored graph. That matters given `docs/notes/custom-strategies.md`'s conclusion that a
+custom `strategy { }` graph is the wrong tool for most of this app's needs: this is exactly the one
+situation that note's own survey table calls out — "long game/agent loops with per-turn upkeep" —
+and Koog provides the recipe itself, so adopting it is a parameter change, not new graph authorship.
 
 ## Architecture Decisions
-- **States replace placeholders:** `TransferStatus` becomes `PENDING, SETTLED, CANCELLED,
-  FAILED` (all but `PENDING` terminal). The step-1 placeholders `COMPLETED/REVERSED/REVERSAL`
-  are removed; Flyway V4 rewrites existing `COMPLETED` rows to `SETTLED` (historically true —
-  they did settle).
-- **Settler transactionality:** each row settles in its own transaction (flip-then-credit),
-  so one poisoned row can't roll back a batch; the conditional flip makes re-delivery after a
-  crash harmless (an already-`SETTLED` row is skipped).
-- **Undo confirmation is a new pending variant:** `PendingInteraction.CancelConfirmation`
-  (Jackson `kind = "CANCEL_CONFIRMATION"`) joins the sealed hierarchy — the undo goes through
-  the *same* deterministic confirm gate as sends; `reply()` executes `cancel` app-side. New
-  JSON subtype is additive, so persisted step-5/6 payloads still deserialize.
-- **Config:** `TransferProperties` (`app.transfer.settlement-delay: Duration = PT2M`,
-  `app.transfer.settlement-poll-ms = 5000`); integration tests override to ~`PT1S`/fast poll.
-  `@EnableScheduling` already on (`MoneyTransferApplication`).
-- **Balance hint is advisory only** (FR-22): live balance appended to the per-turn system
-  prompt; `StagedTransfer` gains a nullable `balanceAfter` (JSON-backward-compatible) shown in
-  the confirmation summary. All existing guards (re-specify flow, tool refusal, atomic debit)
-  unchanged.
-- **Teaching comments** (AC-26) on every Koog call site touched; ordinary domain code keeps
-  normal KDoc.
+- **`FactRetrieval` over the blunter strategies.** Koog offers `WholeHistory` (one generic prose
+  TLDR), `FromLastNMessages`/`FromTimestamp`/`Chunked` (truncate, no semantic awareness), and
+  `FactRetrievalHistoryCompressionStrategy` (extract named facts per `Concept`, then replace
+  history with a compact assistant message containing them). FR-17 asks for "retained facts," and
+  fact retrieval is the only strategy that names *what* to keep rather than *how much* — it can't
+  silently drop the one fact that mattered.
+- **Narrow `Concept` list, on purpose.** Unlike a typical assistant (recommendations, support
+  tickets), this app's authoritative state — the ledger, pending confirmations — already lives in
+  Postgres and is **re-queried live via tools** every turn (`getRecentTransfers`, `getBalance`,
+  `pending_interaction`). Chat history isn't the source of truth here, just conversational
+  continuity. So only two `Concept`s are defined:
+  - `resolved_recipient` (`FactType.SINGLE`) — which contact an ambiguous name most recently
+    resolved to, so "send them another $20" still works after compression.
+  - `recent_topic` (`FactType.SINGLE`) — a brief note on what the conversation has been about, the
+    general-continuity fallback a `WholeHistory` TLDR would have given.
+
+  A longer list (user preferences, a running transfer log, etc.) was considered and rejected: the
+  tools already give the model live, authoritative answers for anything ledger-related, so
+  extracting more would just duplicate that with a staler, LLM-summarized copy.
+- **Fallback: `FromLastNMessages(10)`, not the default `NoCompression`.** If a conversation never
+  resolves an ambiguous recipient and has no clear "topic" to extract (e.g. the user only asks
+  balance questions), `FactRetrieval`'s own default fallback (`NoCompression`) would leave the
+  oversized history untouched until `windowSize(50)` truncates it blindly. Passing an explicit
+  `FromLastNMessages(10)` fallback keeps *some* bound in that edge case instead of relying on the
+  hard cutoff.
+- **`retrievalModel = model` — reuse the turn's active model.** The extraction call could target a
+  separate (cheaper) model, but that needs its own config property and, more importantly, would
+  bypass the existing Anthropic→OpenAI fallback: a hardcoded model id could fail if only one
+  provider's key is configured, defeating `AgentService`'s multi-provider design. Passing
+  `turnStrategy`'s own `model` parameter — whichever provider is driving the current attempt — is
+  simpler and can't desync from provider availability. Revisit only if extraction cost becomes a
+  real concern.
+- **Threshold below `windowSize`, not above it.** `HistoryCompressionConfig.isHistoryTooBig` is a
+  `(Prompt) -> Boolean` predicate; Koog's own docs use `prompt.messages.size > 100` as the example.
+  New `HistoryCompressionProperties.maxMessages` (default well under 50) drives
+  `{ prompt -> prompt.messages.size > maxMessages }`, so compression is the thing that normally
+  fires — `windowSize(50)` becomes a backstop a healthy conversation should rarely reach.
+- **Compression firing "after each tool execution" still solves cross-turn growth.** Each `/chat`
+  call is its own `agent.run()`; `ChatMemory` loads the full Postgres-stored transcript into that
+  run's prompt at the start and stores the run's final prompt back at completion. Because
+  `singleRunStrategyWithHistoryCompression`'s compression node runs *inside* that same run — after
+  a tool call, before the next LLM turn — a compressed prompt is what gets stored back. So this
+  isn't just intra-run tidying; it's what keeps the Postgres `chat_history` row bounded across
+  turns. The one gap: a turn with **zero** tool calls (rare — the system prompt keeps the agent
+  tool-driven) gets no chance to compress that round; `windowSize(50)` remains the backstop.
+- **Fallback loop stays safe.** A retry after an Anthropic failure re-runs with the same
+  `conversationId`/`sessionId`; `ChatMemory` reloads whatever was last stored (possibly already
+  compressed). Idempotent either way — no different from how the fallback already tolerates a
+  `Persistence` checkpoint left by a prior attempt.
 
 ## Implementation Steps
 
-### Step 1: Schema (Flyway V4)
-- [x] `V4__async_settlement.sql`: `ALTER TABLE transfer ADD COLUMN settle_at TIMESTAMPTZ`;
-      `UPDATE transfer SET status = 'SETTLED' WHERE status = 'COMPLETED'`; index
-      `(status, settle_at)` for the settler poll.
-- Files: `src/main/resources/db/migration/V4__async_settlement.sql`.
+### Step 1: Config
+- [ ] `HistoryCompressionProperties` (`agent/config`, prefix `app.agent.history-compression`):
+      `enabled: Boolean = true` (escape hatch, matching `ObservabilityProperties`'s precedent),
+      `maxMessages: Int = 20`.
+- Files: `HistoryCompressionProperties.kt` (new), `application.properties`.
 
-### Step 2: Domain layer
-- [x] `TransferStatus` → `PENDING, SETTLED, CANCELLED, FAILED`; `Transfer` gains
-      `settleAt: Instant?`.
-- [x] `TransferRepository`: `findByStatusAndSettleAtLessThanEqual(PENDING, now)` (settler poll);
-      `@Modifying` conditional flips `markSettled/markCancelled/markFailed(id)` each guarded by
-      `WHERE status = 'PENDING'` returning the update count; list query becomes
-      sender-or-recipient so recipients see incoming settled transfers.
-- [x] New exceptions in `common/DomainExceptions.kt`: `TransferNotCancellableException`
-      (settled/already-cancelled → 409), `UnknownTransferException` (404) + handler mappings.
-- Files: `Transfer.kt`, `TransferRepository.kt`, `common/DomainExceptions.kt`,
-  `common/GlobalExceptionHandler.kt`.
+### Step 2: Concepts + strategy wiring (`AgentService`)
+- [ ] Define the `resolved_recipient` / `recent_topic` `Concept`s.
+- [ ] In `runAgent`, when `historyCompression.enabled`, pass `strategy =
+      singleRunStrategyWithHistoryCompression(HistoryCompressionConfig(isHistoryTooBig = { prompt
+      -> prompt.messages.size > historyCompression.maxMessages }, compressionStrategy =
+      FactRetrievalHistoryCompressionStrategy(concepts, fallback =
+      HistoryCompressionStrategy.FromLastNMessages(10))))` to the existing `AIAgent(...)` call —
+      `ChatMemory`, `Persistence`, `OpenTelemetry`, `handleEvents` installs are unchanged.
+- [ ] Teaching comment (AC-26) at the call site with the `docs.koog.ai/history-compression` link.
+- Files: `AgentService.kt`.
 
-### Step 3: Service layer (the L5/L6 split)
-- [x] `TransferService.transfer(...)` → **`initiate(...)`**: validations + existence checks as
-      today; atomic debit; save `PENDING` row with `settleAt`. (Keep the method's exception
-      contract; callers rename.)
-- [x] `TransferService.cancel(transferId, actingAccountId)`: ownership check (sender only);
-      `markCancelled` → 1 row: credit sender back, return the row; 0 rows: throw
-      `TransferNotCancellableException`/`UnknownTransferException` by current status.
-- [x] `TransferSettler` (`@Component`, transfer package): `@Scheduled(fixedDelayString =
-      "${app.transfer.settlement-poll-ms:5000}")` — poll due rows; per row `settleOne(id)`
-      (`@Transactional`): `markSettled` → credit recipient; recipient missing → `markFailed` +
-      re-credit sender.
-- [x] `TransferProperties` (`@ConfigurationProperties("app.transfer")`).
-- Files: `TransferService.kt`, `TransferSettler.kt` (new), `TransferProperties.kt` (new),
-  `application.properties`.
+### Step 3: Tests
+- [ ] Unit test `HistoryCompressionProperties` binding/defaults and the `isHistoryTooBig`
+      predicate logic in isolation (plain construction, no Spring context).
+- [ ] Mock-executor smoke test (pattern: `AgentEventsTest`) proving the agent still completes a
+      normal chooseRecipient→prepareTransfer turn with the new strategy installed — the strategy
+      swap doesn't break the existing tool loop.
+- **Not attempted:** asserting the semantic content Koog's fact-extraction LLM call produces —
+  that needs a real model, same reasoning step 6 used for AC-19b (documented manual/dev
+  verification instead of a mock assertion).
+- Files: `HistoryCompressionPropertiesTest.kt` (new), `AgentServiceTest.kt` or a new
+  `AgentHistoryCompressionTest.kt`.
 
-### Step 4: REST layer
-- [x] `POST /api/v1/transfers/{id}/cancel` on `TransferController` → `cancel(...)`, returns the
-      `CANCELLED` transfer; create endpoint unchanged in shape (response now carries
-      `PENDING` + `settleAt`). `TransferResponse` gains `settleAt`.
-- Files: `TransferController.kt`.
-
-### Step 5: Agent layer (FR-21, FR-22)
-- [x] `PendingInteraction.CancelConfirmation(transferId, summary)` + `@JsonSubTypes` entry.
-- [x] `MoneyTransferTools`: new tools `getRecentTransfers()` (id | recipient | amount | status |
-      settles-at, via `TransferService`) and `undoLastTransfer()` (most recent `PENDING`
-      transfer for the sender → stage `CancelConfirmation`; none pending → tell the model to
-      explain nothing is cancellable, mentioning any recently settled transfer is final).
-      `prepareTransfer` computes `balanceAfter` into `StagedTransfer` (summary shows it).
-- [x] `AgentService`: inject `TransferService` usage updates (`initiate`); `resolveConfirmation`
-      branches on the confirmation variant — staged send → `initiate` + reply
-      "Queued — $X to <name> settles in about <delay>; say 'undo' before then to cancel";
-      cancel confirmation → `TransferService.cancel` + reply (settled race → honest "it already
-      settled" message). System prompt gains the live balance line (FR-22).
-- Files: `PendingInteractionStore.kt`, `MoneyTransferTools.kt`, `AgentService.kt`.
-
-### Step 6: Tests
-- [x] **Update existing:** `TransferServiceTest` (transfer→initiate: asserts `PENDING`, debit
-      only), `MoneyTransferIntegrationTest` + `TransferConcurrencyIT` (settle explicitly or
-      short-delay await for balance assertions), `AgentServiceTest` /
-      `AgentConfirmationIntegrationTest` ("Done — sent" → "Queued …"), `MoneyTransferToolsTest`
-      (balance-after in summary).
-- [x] **New unit:** `TransferSettlerTest` — settles due `PENDING`, skips future `settle_at`,
-      recipient-gone → `FAILED` + sender re-credited, already-terminal row no-ops.
-- [x] **New unit:** cancel cases in `TransferServiceTest` — cancel `PENDING` (re-credit),
-      cancel `SETTLED`/`CANCELLED` → `TransferNotCancellableException`, non-owner rejected.
-- [x] **New IT (Testcontainers):** `SettlementLifecycleIT` — initiate → `PENDING` + debited →
-      await settle (~1 s delay) → `SETTLED` + credited (AC-30); undo before settle → `CANCELLED`
-      + refunded, then undo again → 409 (AC-20); concurrent cancel-vs-settle → exactly one wins,
-      balances consistent (AC-31).
-- [x] **New agent tests (mock executor):** undo tool stages `CancelConfirmation`, executes only
-      after "yes" (AC-32); system prompt contains balance; queued wording asserted (AC-33 & FR-21).
-- Files: existing test classes above; `TransferSettlerTest.kt`, `SettlementLifecycleIT.kt` (new).
-
-### Step 7: Docs (AC-26/29)
-- [x] README "Step 7 — Async settlement & undo" section: curl walkthrough — send via agent →
-      "Queued", `getRecentTransfers`/status shows `PENDING`, undo → `CANCELLED` + refund; then a
-      second send left to settle → `SETTLED`, undo attempt → rejected.
-- [x] Update `docs/agent-flow.md` / `docs/data-model.md` state diagram if present; teaching
-      comments at all touched Koog call sites.
+### Step 4: Docs
+- [ ] `feature.md`: AC-21 stays unchecked until the manual long-conversation walkthrough is done;
+      note the concept-design decision.
+- [ ] `README.md`: Step 8 section (AC-27) — a walkthrough of a long conversation, then a
+      follow-up referencing "them" to show the resolved-recipient fact survived compression.
 
 ## Acceptance Criteria Mapping
 | AC | Verified By |
 |----|-------------|
-| AC-20: cancel PENDING refunds; SETTLED/CANCELLED undo rejected | `TransferServiceTest` cancel cases; `SettlementLifecycleIT#undoBeforeSettle` |
-| AC-30: confirm debits + PENDING; settler credits + SETTLED after delay | `SettlementLifecycleIT#settlesAfterDelay`; `TransferSettlerTest` |
-| AC-31: cancel-vs-settle race — one winner, balances consistent | `SettlementLifecycleIT#cancelVsSettleRace` |
-| AC-32: agent undo only after CONFIRMATION "yes"; queued wording; status via tool | `AgentServiceTest` (mock executor) undo + wording cases |
-| AC-33: balance-after in summary; re-specify flow unchanged | `MoneyTransferToolsTest`; existing overdraft tests stay green |
+| AC-21: a long conversation compresses to retained facts; the agent still answers correctly using them | Step 3's mock-executor wiring test (no crash/regression) + a manual walkthrough with a real model (README) — semantic correctness of an LLM's own fact extraction isn't meaningfully mockable |
 
 ## Risks & Mitigations
-- **Existing tests assume instant settlement** (step-1 ITs assert recipient balance right after
-  create). → Update them deliberately (await settlement or call `settleOne` directly); treat
-  every such edit as a *contract change acknowledged*, not a test "fix".
-- **Settler running during unrelated ITs** could settle rows mid-assertion. → Default poll is
-  5 s with `PT2M` delay in main config; tests that need settlement opt into short overrides,
-  others see stable `PENDING` rows.
-- **Enum rename breaks persisted rows** (`COMPLETED` in seed/history). → V4 migrates data in the
-  same migration that assumes new values; no code reads old names afterward.
-- **New Jackson subtype in `pending_interaction` payloads.** → Additive `@JsonSubTypes` entry;
-  old `CONFIRMATION`/`CLARIFICATION` payloads deserialize unchanged (verify in
-  `ConversationCleanupTest`/store test).
-- **Double refund on racing cancel + settler-failure path.** → Every balance mutation is behind
-  a conditional status flip; only the single winning flip performs its credit.
+- **Extra LLM call adds cost/latency.** Only fires once the threshold is crossed, and only within
+  turns that call a tool — most turns pay nothing extra. `app.agent.history-compression.enabled`
+  is the off switch.
+- **Extracted facts could be wrong or stale** (the LLM mis-summarizes). Mitigated by design: facts
+  are advisory conversational context only — every money-moving decision (`prepareTransfer`,
+  `undoLastTransfer`, the confirm gate) still resolves against live Postgres state, never against
+  anything compressed out of chat history. A bad extraction can produce an awkward reply; it can't
+  move money incorrectly.
+- **Can't fully unit-test semantic compression.** Accepted, same precedent as AC-19b.
 
 ## Estimated Complexity
-**Medium-High.** The state machine and conditional flips are small, but this is the first step
-that changes an existing domain contract (instant → async settlement), so the blast radius is
-in the callers and tests, not the new code. The race tests (AC-31) need care to be
-deterministic.
+**Small.** One new properties class, one strategy-construction call at an existing call site, two
+`Concept` definitions. No schema change — compression output rides inside the existing
+`chat_history` payload `ChatMemory` already owns.
