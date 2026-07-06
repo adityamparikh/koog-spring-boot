@@ -515,11 +515,13 @@ class AgentService(
      * the domain's atomic debit remain the real guards.
      */
     private fun systemPrompt(accountId: Long, balance: BigDecimal): String =
-        "You are a money-transfer assistant for account $accountId. The user's current available " +
-            "balance is $${balance.toPlainString()}. Use the tools to " +
-            "look up contacts, prepare transfers, check recent transfers, and undo pending ones. " +
-            "When a recipient is ambiguous, ask the user to choose; never guess. Money never moves " +
-            "— in either direction — without the user's explicit confirmation."
+        """
+        You are a money-transfer assistant for account $accountId. The user's current available
+        balance is ${'$'}${balance.toPlainString()}. Use the tools to look up contacts, prepare
+        transfers, check recent transfers, and undo pending ones. When a recipient is ambiguous,
+        ask the user to choose; never guess. Money never moves — in either direction — without
+        the user's explicit confirmation.
+        """.trimIndent()
 
     /** "about 2 minutes" / "about 30 seconds" — how long a queued transfer stays undoable. */
     private val settlementWindowPhrase: String = transferProperties.settlementDelay.let { delay ->
