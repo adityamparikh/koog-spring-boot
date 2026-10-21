@@ -24,10 +24,6 @@ java {
     }
 }
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
     // Web + persistence (Spring Data JDBC) + actuator.
     implementation(libs.spring.boot.starter.web)
