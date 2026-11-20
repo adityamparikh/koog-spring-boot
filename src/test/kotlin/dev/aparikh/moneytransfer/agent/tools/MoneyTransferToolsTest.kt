@@ -172,7 +172,8 @@ class MoneyTransferToolsTest {
     @Test
     fun `undoLastTransfer stages a cancel confirmation and does NOT cancel`() {
         every { transferService.latestPendingFor(1) } returns transfer(42, sender = 1, recipient = 5, status = TransferStatus.PENDING)
-        every { accountService.getAccount(5) } returns Account(id = 5, firstName = "Daniel", balance = BigDecimal("500.00"), lastName = "Craig")
+        every { accountService.getAccount(5) } returns
+            Account(id = 5, firstName = "Daniel", balance = BigDecimal("500.00"), lastName = "Craig")
 
         val out = tools.undoLastTransfer()
 

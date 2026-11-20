@@ -1,0 +1,37 @@
+# Overrides on top of detekt's default rule set (build.gradle.kts: buildUponDefaultConfig = true).
+# Every entry says why it differs from the default. Run with `./gradlew detekt`.
+config:
+  validation: true
+
+style:
+  MaxLineLength:
+    # Same limit as ktlint (.editorconfig max_line_length), so the two tools never disagree.
+    maxLineLength: 140
+  ReturnCount:
+    # Early-return validation (`?: return`, `if (bad) return "…"`) is the house style for tool
+    # methods and the settler; only count returns that are not guard clauses.
+    excludeGuardClauses: true
+  ThrowsCount:
+    # Same reasoning: TransferService opens each operation with `if (bad) throw …` checks.
+    excludeGuardClauses: true
+
+complexity:
+  TooManyFunctions:
+    # Private helpers in AgentService are how the Koog teaching code stays readable; count only
+    # the public surface.
+    ignorePrivate: true
+
+exceptions:
+  SwallowedException:
+    # These domain exceptions are expected business outcomes that the agent turns into a
+    # user-facing reply ("nothing was sent"); there is no lost failure to propagate.
+    ignoredExceptionTypes:
+      - InsufficientFundsException
+      - UnknownAccountException
+      - UnknownContactException
+      - UnknownTransferException
+      - TransferNotCancellableException
+      - NumberFormatException
+      - InterruptedException
+      - ParseException
+      - MalformedURLException

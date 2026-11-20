@@ -6,6 +6,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
+    // Lint gate. Hangs off `check`, so `./gradlew build` stays the one command.
+    alias(libs.plugins.detekt)
 }
 
 group = "dev.aparikh"
@@ -79,4 +81,29 @@ kotlin {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Print the assertion message, file:line and stack of a failing test on the console, not just
+    // its name and a path to the HTML report.
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }
+
+// detekt: detekt's default rule set plus the overrides in config/detekt/detekt.yml. No baseline —
+// the code is clean against this config, so any new finding fails `check`.
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(files("config/detekt/detekt.yml"))
+}
+
+// detekt runs on its own embedded Kotlin compiler and refuses any other kotlin-* version on its
+// classpath, but the Spring dependency-management plugin pins every configuration's Kotlin to the
+// project's. Give the detekt tool configuration back the version detekt was built with.
+configurations.matching { it.name == "detekt" }.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin") {
+            useVersion(dev.detekt.gradle.plugin.getSupportedKotlinVersion())
+        }
+    }
+}
+

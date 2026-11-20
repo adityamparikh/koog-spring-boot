@@ -60,7 +60,13 @@ class AgentPersistenceIT {
     }
 
     private fun confirmation(amount: String) = PendingInteraction.Confirmation(
-        StagedTransfer(senderAccountId = 1, recipientAccountId = 2, recipientDisplay = "Alice Smith", amount = BigDecimal(amount), purpose = "lunch"),
+        StagedTransfer(
+            senderAccountId = 1,
+            recipientAccountId = 2,
+            recipientDisplay = "Alice Smith",
+            amount = BigDecimal(amount),
+            purpose = "lunch",
+        ),
     )
 
     @Test
@@ -147,6 +153,9 @@ class AgentPersistenceIT {
 
         val transcript = chatHistory.load(id.toString())
         assertTrue(transcript.any { it is Message.User && it.textContent().contains("cancel") }, "user turn missing: $transcript")
-        assertTrue(transcript.any { it is Message.Assistant && it.textContent().contains("cancelled") }, "assistant turn missing: $transcript")
+        assertTrue(
+            transcript.any { it is Message.Assistant && it.textContent().contains("cancelled") },
+            "assistant turn missing: $transcript",
+        )
     }
 }

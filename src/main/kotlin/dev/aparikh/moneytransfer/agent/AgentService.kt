@@ -179,7 +179,10 @@ class AgentService(
                 return tag(reply, id)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                // Deliberately broad: Koog's provider clients fail with assorted exception types (HTTP,
+                // serialization, timeouts) and any of them must fall through to the next provider.
+                // Cancellation is rethrown above, so it is never swallowed here.
                 lastError = e
                 val next = llms.getOrNull(index + 1)
                 if (next != null) {
@@ -325,7 +328,8 @@ class AgentService(
             respond(
                 conversationId,
                 answer,
-                "Sorry, I didn't catch that. Reply \"yes\" to ${confirmation.summary.replaceFirstChar { it.lowercase() }}, or \"no\" to keep it.",
+                "Sorry, I didn't catch that. Reply \"yes\" to " +
+                    "${confirmation.summary.replaceFirstChar { it.lowercase() }}, or \"no\" to keep it.",
                 type = InteractionType.CONFIRMATION,
                 transferSummary = confirmation.summary,
             )

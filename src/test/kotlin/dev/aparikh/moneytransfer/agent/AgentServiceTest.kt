@@ -64,7 +64,13 @@ class AgentServiceTest {
     private fun stageConfirmation() = pending.put(
         conversationId,
         PendingInteraction.Confirmation(
-            StagedTransfer(senderAccountId = 1, recipientAccountId = 2, recipientDisplay = "Alice Smith", amount = BigDecimal("50.00"), purpose = "lunch"),
+            StagedTransfer(
+                senderAccountId = 1,
+                recipientAccountId = 2,
+                recipientDisplay = "Alice Smith",
+                amount = BigDecimal("50.00"),
+                purpose = "lunch",
+            ),
         ),
     )
 
