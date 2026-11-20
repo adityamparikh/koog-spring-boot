@@ -33,8 +33,12 @@ class TransferServiceTest {
     private val amount = BigDecimal("100.00")
 
     private fun transfer(status: TransferStatus = TransferStatus.PENDING) = Transfer(
-        id = 10, senderAccountId = 1, recipientAccountId = 2,
-        amount = amount, status = status, settleAt = Instant.now(),
+        id = 10,
+        senderAccountId = 1,
+        recipientAccountId = 2,
+        amount = amount,
+        status = status,
+        settleAt = Instant.now(),
     )
 
     // --- initiate (L5: atomic re-validate + debit + record) ---

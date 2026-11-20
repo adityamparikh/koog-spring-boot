@@ -12,13 +12,13 @@ import dev.aparikh.moneytransfer.transfer.TransferService
 import dev.aparikh.moneytransfer.transfer.TransferStatus
 import io.mockk.every
 import io.mockk.mockk
-import java.math.BigDecimal
-import java.time.Instant
-import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.math.BigDecimal
+import java.time.Instant
+import java.util.UUID
 
 /**
  * Direct unit tests for the [MoneyTransferTools] `ToolSet` — the tool methods are plain Kotlin
@@ -33,9 +33,12 @@ class MoneyTransferToolsTest {
     private val pending = PendingInteractionStore(InMemoryPendingInteractionRepository())
     private val conversationId: UUID = UUID.fromString("00000000-0000-0000-0000-000000000001")
     private val tools = MoneyTransferTools(
-        accountId = 1, conversationId = conversationId,
-        contactService = contactService, accountService = accountService,
-        transferService = transferService, pending = pending,
+        accountId = 1,
+        conversationId = conversationId,
+        contactService = contactService,
+        accountService = accountService,
+        transferService = transferService,
+        pending = pending,
     )
 
     private fun contact(contactId: Long, accountId: Long, name: String, phone: String? = null) =
@@ -143,8 +146,13 @@ class MoneyTransferToolsTest {
     // --- step 7: settlement status + undo tools ---
 
     private fun transfer(id: Long, sender: Long, recipient: Long, status: TransferStatus) = Transfer(
-        id = id, senderAccountId = sender, recipientAccountId = recipient,
-        amount = BigDecimal("50.00"), purpose = "dinner", status = status, settleAt = Instant.now(),
+        id = id,
+        senderAccountId = sender,
+        recipientAccountId = recipient,
+        amount = BigDecimal("50.00"),
+        purpose = "dinner",
+        status = status,
+        settleAt = Instant.now(),
     )
 
     @Test
@@ -194,9 +202,13 @@ class MoneyTransferToolsTest {
         val json = kotlinx.serialization.json.Json.encodeToString(
             listOf(
                 TransferView(
-                    transferId = 42, direction = TransferDirection.SENT, counterpartyAccountId = 5,
-                    amountUsd = "50.00", status = TransferStatus.PENDING,
-                    settlesAtUtc = "2026-07-05 12:00:00 UTC", purpose = "dinner",
+                    transferId = 42,
+                    direction = TransferDirection.SENT,
+                    counterpartyAccountId = 5,
+                    amountUsd = "50.00",
+                    status = TransferStatus.PENDING,
+                    settlesAtUtc = "2026-07-05 12:00:00 UTC",
+                    purpose = "dinner",
                 ),
             ),
         )

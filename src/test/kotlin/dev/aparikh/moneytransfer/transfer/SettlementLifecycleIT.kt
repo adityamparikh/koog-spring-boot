@@ -108,10 +108,12 @@ class SettlementLifecycleIT {
                 assertEquals(0, balance(5).compareTo(BigDecimal("500.00")), "cancel won: sender refunded")
                 assertEquals(0, balance(6).compareTo(BigDecimal("500.00")), "cancel won: recipient untouched")
             }
+
             TransferStatus.SETTLED -> {
                 assertEquals(0, balance(5).compareTo(BigDecimal("400.00")), "settle won: debit stands")
                 assertEquals(0, balance(6).compareTo(BigDecimal("600.00")), "settle won: recipient credited")
             }
+
             else -> throw AssertionError("transfer must end terminal (CANCELLED or SETTLED), was $outcome")
         }
         // Money conservation regardless of winner: the pair started with 1000.00 total.

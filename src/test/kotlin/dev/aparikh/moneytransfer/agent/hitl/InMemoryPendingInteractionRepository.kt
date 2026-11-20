@@ -11,9 +11,13 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal class InMemoryPendingInteractionRepository : PendingInteractionRepository {
     private val rows = ConcurrentHashMap<UUID, String>()
-    override fun upsert(id: UUID, payload: String) { rows[id] = payload }
+    override fun upsert(id: UUID, payload: String) {
+        rows[id] = payload
+    }
     override fun findPayload(id: UUID): String? = rows[id]
-    override fun deleteByConversationId(id: UUID) { rows.remove(id) }
+    override fun deleteByConversationId(id: UUID) {
+        rows.remove(id)
+    }
     override fun consume(id: UUID): String? = rows.remove(id)
     override fun deleteOlderThan(cutoff: Instant): Int = 0
 }

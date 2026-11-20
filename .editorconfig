@@ -1,0 +1,25 @@
+# Editor and ktlint formatting rules. The Gradle build passes the same ktlint settings explicitly
+# (build.gradle.kts `ktlintSettings`); keep the two in sync. Fix with `./gradlew spotlessApply`.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{kt,kts}]
+max_line_length = 140
+ktlint_code_style = intellij_idea
+# The code deliberately puts one parameter per line in DTOs and wraps long expression bodies;
+# these two rules would collapse them onto one line whenever it fits, so they are off.
+ktlint_standard_class-signature = disabled
+ktlint_standard_function-signature = disabled
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

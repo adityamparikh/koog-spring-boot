@@ -19,8 +19,12 @@ class TransferSettlerTest {
     private val settler = TransferSettler(transfers, service)
 
     private fun due(id: Long) = Transfer(
-        id = id, senderAccountId = 1, recipientAccountId = 2,
-        amount = BigDecimal("10.00"), status = TransferStatus.PENDING, settleAt = Instant.now(),
+        id = id,
+        senderAccountId = 1,
+        recipientAccountId = 2,
+        amount = BigDecimal("10.00"),
+        status = TransferStatus.PENDING,
+        settleAt = Instant.now(),
     )
 
     @Test

@@ -6,8 +6,6 @@ import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
 import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
 import dev.aparikh.moneytransfer.transfer.TransferService
 import dev.aparikh.moneytransfer.transfer.TransferStatus
-import java.math.BigDecimal
-import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -22,6 +20,8 @@ import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import java.math.BigDecimal
+import java.util.UUID
 
 /**
  * Integration test for the confirm-gate money path against **real PostgreSQL** (Testcontainers +
@@ -65,8 +65,11 @@ class AgentConfirmationIntegrationTest {
         conversationId,
         PendingInteraction.Confirmation(
             StagedTransfer(
-                senderAccountId = 1, recipientAccountId = 2, recipientDisplay = "Alice Smith",
-                amount = BigDecimal(amount), purpose = "lunch",
+                senderAccountId = 1,
+                recipientAccountId = 2,
+                recipientDisplay = "Alice Smith",
+                amount = BigDecimal(amount),
+                purpose = "lunch",
             ),
         ),
     )

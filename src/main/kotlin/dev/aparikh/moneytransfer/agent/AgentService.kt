@@ -16,8 +16,6 @@ import ai.koog.agents.features.opentelemetry.feature.OpenTelemetry
 import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.agents.snapshot.feature.isTombstone
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
-import io.opentelemetry.sdk.metrics.export.MetricExporter
-import io.opentelemetry.sdk.trace.export.SpanExporter
 import ai.koog.prompt.executor.clients.LLModelDefinitions
 import ai.koog.prompt.executor.clients.anthropic.AnthropicModels
 import ai.koog.prompt.executor.clients.modelsById
@@ -27,6 +25,7 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import ai.koog.prompt.message.ResponseMetaInfo
+import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.agent.config.AgentModelProperties
 import dev.aparikh.moneytransfer.agent.config.HistoryCompressionProperties
 import dev.aparikh.moneytransfer.agent.config.ObservabilityProperties
@@ -42,10 +41,11 @@ import dev.aparikh.moneytransfer.common.NoPendingInteractionException
 import dev.aparikh.moneytransfer.common.TransferNotCancellableException
 import dev.aparikh.moneytransfer.common.UnknownAccountException
 import dev.aparikh.moneytransfer.common.UnknownTransferException
-import dev.aparikh.moneytransfer.account.AccountService
 import dev.aparikh.moneytransfer.contact.ContactService
 import dev.aparikh.moneytransfer.transfer.TransferProperties
 import dev.aparikh.moneytransfer.transfer.TransferService
+import io.opentelemetry.sdk.metrics.export.MetricExporter
+import io.opentelemetry.sdk.trace.export.SpanExporter
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
