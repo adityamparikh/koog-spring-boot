@@ -38,3 +38,13 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+### Secrets ###
+# Local env files hold real LLM keys; only the blank template is committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
