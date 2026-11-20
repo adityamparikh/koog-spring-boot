@@ -19,8 +19,10 @@ does, the transfer can be undone.**
   - at runtime, Spring Boot Docker Compose support auto-starts PostgreSQL from `compose.yaml`;
   - in tests, Testcontainers starts a throwaway PostgreSQL.
 - **LLM API keys (step 2+)** — for the `/agent/chat` endpoint, set `ANTHROPIC_API_KEY` and
-  `OPENAI_API_KEY` in your environment (never committed). The app still boots without them;
-  a chat request just returns `503` until at least one provider is configured. Tests never
+  `OPENAI_API_KEY` in your environment (never committed; `.env.example` shows the shape), **and**
+  opt in to live, paid LLM calls with `APP_AGENT_LIVE_LLM=true`. Keys alone are not enough: until
+  the opt-in is set, no provider executor is created. The app still boots without either; a chat
+  request just returns `503` until at least one provider is configured and opted in. Tests never
   call a real LLM — they use Koog's `agents-test` mock executor.
 
 ## Run
@@ -124,20 +126,23 @@ Step 2 adds a conversational endpoint backed by the [Koog](https://docs.koog.ai)
 framework. There are **no tools yet** (those arrive in step 3) — it's a single message in, a
 text reply out, keyed by a `conversationId` so follow-up turns keep context.
 
-**Setup:** export your keys before `./gradlew bootRun`:
+**Setup:** export your keys and the live-LLM opt-in before `./gradlew bootRun` (every chat turn
+from here on is a paid API call):
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
+export APP_AGENT_LIVE_LLM=true   # maps to app.agent.live-llm; without it /agent/chat returns 503
 ```
 
 **LLM configuration.** The Koog starter auto-configures a client + executor per provider whose
-`api-key` is non-blank, plus an aggregate `multiLLMPromptExecutor`. Models are selected in
+`api-key` is non-blank and whose `ai.koog.<provider>.enabled` is true, plus an aggregate
+`multiLLMPromptExecutor`. `application.properties` ties both `enabled` flags to
+`app.agent.live-llm` (default `false`). Models are selected in
 `application.properties` by Koog model id:
 
 | Property | Default | Role |
 |----------|---------|------|
 | `app.agent.anthropic-model` | `claude-sonnet-4-6` | everyday model (feature.md's "Sonnet 5") |
-| `app.agent.anthropic-complex-model` | `claude-opus-4-7` | complex turns (feature.md's "Opus 4.8"); first used in step 4 |
 | `app.agent.openai-fallback-model` | `gpt-5.4` | cross-provider error-fallback |
 
 **Multi-provider fault tolerance.** Two layers, by design:
