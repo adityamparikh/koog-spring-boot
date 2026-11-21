@@ -81,7 +81,8 @@ Global conventions (from `docs/project.md`): Kotlin + **Spring Boot 3.5.x** (lat
 stable in that line — chosen for Koog Spring Boot starter compatibility, resolving OQ-1),
 Gradle Kotlin DSL with the version catalog (`gradle/libs.versions.toml`) as the **single
 source of truth for all versions and dependency coordinates** (no inline version strings
-or `extra` properties in `build.gradle.kts` — resolving OQ-2), modular-by-feature packages
+or `extra` properties in `build.gradle.kts` — resolving OQ-2; the single exception since
+step 5 is the `kotlin-serialization.version` BOM override, see `docs/project.md`), modular-by-feature packages
 under `dev.aparikh.moneytransfer`, REST base path `/api/v1`, central `@RestControllerAdvice`
 error handling (RFC 7807 `ProblemDetail`), constructor injection + immutable Kotlin, and
 "latest and greatest" stable library versions declared in the catalog. A Swagger/OpenAPI

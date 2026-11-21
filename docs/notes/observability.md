@@ -13,6 +13,35 @@
 (`isVerbose = false`) — we deliberately never call `setVerbose(true)`, because for a money app that
 would emit prompt/response content (amounts, contact names, balances) unmasked into exported spans.
 
+## Reading traces and metrics from a terminal (agents included)
+
+Grafana's UI is not the only way in. The LGTM container runs Grafana with anonymous admin access on
+`:3000`, and Grafana's datasource proxy forwards to Tempo, Mimir (Prometheus API) and Loki by their
+provisioned uids (`tempo`, `prometheus`, `loki` — the same in the pinned `0.11.4` and in current
+images). With the stack up (`./gradlew bootRun` or `docker compose up -d otel-lgtm`), plain `curl`
+reads everything; no login, no token:
+
+```bash
+G=http://localhost:3000/api/datasources/proxy/uid
+
+# Recent agent traces (TraceQL). Add `&& status=error` to see only failed runs.
+curl -s -G "$G/tempo/api/search" \
+  --data-urlencode 'q={resource.service.name="money-transfer-agent"}' \
+  --data-urlencode 'limit=20'
+
+# One trace in full: every span (agent run, LLM call, tool call) with its attributes.
+curl -s "$G/tempo/api/traces/<traceID from the search>"
+
+# Which metric names Koog has exported to Mimir, then query one (Prometheus HTTP API).
+curl -s "$G/prometheus/api/v1/label/__name__/values"
+curl -s -G "$G/prometheus/api/v1/query" --data-urlencode 'query=<metric name>'
+```
+
+The Tempo search and trace fetch were checked against a local LGTM container with a test span for
+service `money-transfer-agent`. Spans carry no prompt or response text (see above), so these queries
+expose timings, model ids, tool names and errors, not amounts or names. There is no alerting: this is
+a local tutorial stack, and nothing pages anyone.
+
 ## The limitation: a per-request OTel SDK
 
 Koog's `OpenTelemetry` feature builds **its own OTel SDK per install** (a `BatchSpanProcessor` and a

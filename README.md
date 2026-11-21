@@ -1,17 +1,18 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step7-rollback`) is step 7:
-transfers now settle asynchronously — confirming debits the sender and queues the transfer as
-`PENDING`; a scheduled settler credits the recipient after the settlement window, and until it
-does, the transfer can be undone.**
+branch that adds one capability (see `feature.md`). **This branch (`step8-history-compression`)
+is step 8: long conversations are compressed into retained facts (Koog `FactRetrieval`) instead
+of being truncated.** Step 7 before it made transfers settle asynchronously — confirming debits the
+sender and queues the transfer as `PENDING`; a scheduled settler credits the recipient after the
+settlement window, and until it does, the transfer can be undone.
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
 > covers **step 1** (money-transfer REST), **step 2** (AI agent chat), **step 3** (agent tools &
 > human-in-the-loop), **step 4** (balance & overdraft protection), **step 5** (durable
-> persistence), **step 6** (OpenTelemetry observability), and **step 7** (async settlement &
-> undo).
+> persistence), **step 6** (OpenTelemetry observability), **step 7** (async settlement &
+> undo), and **step 8** (history compression).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -299,8 +300,9 @@ future custom strategy graph will emit per-node/subgraph spans automatically —
 
 Observability is **additive**: it's controlled by `app.observability.enabled` (on for local `bootRun`,
 off in tests), so with no OTLP endpoint the app and the test suite run exactly as before. The
-app-scoped OTLP exporter is wrapped (`NonClosingSpanExporter`) so Koog's per-run SDK teardown can't
-shut it down between requests.
+OTLP span and metric exporters are app-scoped beans (`AgentObservabilityConfig`), closed once on
+shutdown; [docs/notes/observability.md](docs/notes/observability.md) explains the per-request SDK
+trade-off and why the earlier `NonClosing*` wrappers were removed.
 
 ```bash
 # 1) Run the app. Spring Boot Docker Compose starts Postgres AND the LGTM stack (compose.yaml).
@@ -315,6 +317,11 @@ curl -s -X POST http://localhost:8080/api/v1/agent/chat \
 #    You'll see a trace per run with child spans for each LLM call and tool call.
 open http://localhost:3000
 ```
+
+The same traces and metrics are readable with `curl` through Grafana's datasource proxy (no login),
+e.g. `curl -s -G http://localhost:3000/api/datasources/proxy/uid/tempo/api/search --data-urlencode
+'q={resource.service.name="money-transfer-agent"}'`; see
+[docs/notes/observability.md](docs/notes/observability.md#reading-traces-and-metrics-from-a-terminal-agents-included).
 
 > Point at a different backend by changing `app.observability.otlp-endpoint`. Koog also ships
 > one-line adapters for **Langfuse** and **W&B Weave** (`addLangfuseExporter`/`addWeaveExporter`) if
