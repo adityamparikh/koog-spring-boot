@@ -7,6 +7,9 @@ Ledger money is simulated (no payment rails), but **LLM calls are real and paid*
 ## Never without asking
 
 Stop and ask the human first. Each of these spends money, destroys data, or is shared.
+In Claude Code, `.claude/settings.json` also turns the matching commands (`./gradlew bootRun`,
+setting the opt-in, `curl` to `/api/v1/agent/*`, `docker compose down`, `git push`, edits to
+`V1`–`V4`) into an approval prompt; other agents have only this list.
 
 - **Live LLM calls.** Setting `APP_AGENT_LIVE_LLM=true` / `app.agent.live-llm=true`, or calling
   `/api/v1/agent/chat` or `/reply` on an app started with real `ANTHROPIC_API_KEY` /
