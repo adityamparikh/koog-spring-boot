@@ -6,6 +6,9 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
+    // Lint + format gates. Both hang off `check`, so `./gradlew build` stays the one command.
+    alias(libs.plugins.detekt)
+    alias(libs.plugins.spotless)
 }
 
 group = "dev.aparikh"
@@ -79,4 +82,50 @@ kotlin {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Print the assertion message, file:line and stack of a failing test on the console, not just
+    // its name and a path to the HTML report.
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+}
+
+// detekt: detekt's default rule set plus the overrides in config/detekt/detekt.yml. No baseline —
+// the code is clean against this config, so any new finding fails `check`.
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(files("config/detekt/detekt.yml"))
+}
+
+// detekt runs on its own embedded Kotlin compiler and refuses any other kotlin-* version on its
+// classpath, but the Spring dependency-management plugin pins every configuration's Kotlin to the
+// project's. Give the detekt tool configuration back the version detekt was built with.
+configurations.matching { it.name == "detekt" }.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin") {
+            useVersion(dev.detekt.gradle.plugin.getSupportedKotlinVersion())
+        }
+    }
+}
+
+// Spotless + ktlint: `./gradlew spotlessApply` fixes formatting, `spotlessCheck` (part of `check`)
+// fails the build on drift. The ktlint settings below mirror .editorconfig (which IDEs read) and are
+// passed explicitly so the Gradle result never depends on how an editorconfig glob is resolved.
+val ktlintSettings = mapOf(
+    "ktlint_code_style" to "intellij_idea",
+    "max_line_length" to "140",
+    // The code deliberately keeps one parameter per line in DTOs and wraps long expression bodies;
+    // these two rules would collapse them onto one line whenever it fits.
+    "ktlint_standard_class-signature" to "disabled",
+    "ktlint_standard_function-signature" to "disabled",
+)
+spotless {
+    kotlin {
+        target("src/**/*.kt")
+        ktlint(libs.versions.ktlint.get()).editorConfigOverride(ktlintSettings)
+    }
+    kotlinGradle {
+        target("*.gradle.kts")
+        ktlint(libs.versions.ktlint.get()).editorConfigOverride(ktlintSettings)
+    }
 }

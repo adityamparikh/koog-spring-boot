@@ -18,7 +18,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-/**
+/*
  * Typed tool results (the workshop's `getOrderHistory(): List<OrderDetails>` style): Koog
  * serializes a `@Tool` method's return value to JSON via kotlinx-serialization, so the model
  * receives structured fields instead of parsing pre-formatted strings.
@@ -55,7 +55,9 @@ data class TransferView(
     val counterpartyAccountId: Long,
     val amountUsd: String,
     val status: TransferStatus,
-    @property:LLMDescription("When the transfer settles/settled (UTC) — a PENDING transfer's undo deadline; null on old rows predating async settlement")
+    @property:LLMDescription(
+        "When the transfer settles/settled (UTC) — a PENDING transfer's undo deadline; null on old rows predating async settlement",
+    )
     val settlesAtUtc: String?,
     val purpose: String?,
 )

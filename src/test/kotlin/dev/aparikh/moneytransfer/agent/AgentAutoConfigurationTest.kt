@@ -13,15 +13,17 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 
 /**
- * Proves AC-09: with the Koog Spring Boot starter present and both providers configured
- * (dummy keys — no network call happens at bean creation), the app context boots and exposes
- * the auto-configured `multiLLMPromptExecutor` plus the per-provider executor beans.
+ * Proves AC-09: with the Koog Spring Boot starter present, both providers configured (dummy keys —
+ * no network call happens at bean creation) and the live-LLM opt-in set, the app context boots and
+ * exposes the auto-configured `multiLLMPromptExecutor` plus the per-provider executor beans.
+ * [LiveLlmOptInTest] proves the same keys without the opt-in create no provider executor.
  * Runs against Testcontainers Postgres (full context); skipped where Docker is unavailable.
  */
 @SpringBootTest(
     properties = [
         "ai.koog.anthropic.api-key=test-anthropic-key",
         "ai.koog.openai.api-key=test-openai-key",
+        "app.agent.live-llm=true",
     ],
 )
 @ActiveProfiles("test")

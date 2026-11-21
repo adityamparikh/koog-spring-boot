@@ -1,17 +1,18 @@
 # Koog Spring Boot — Money-Transfer Assistant
 
 A progressive, tutorial-style build of an agentic money-transfer service. Each step is a
-branch that adds one capability (see `feature.md`). **This branch (`step7-rollback`) is step 7:
-transfers now settle asynchronously — confirming debits the sender and queues the transfer as
-`PENDING`; a scheduled settler credits the recipient after the settlement window, and until it
-does, the transfer can be undone.**
+branch that adds one capability (see `feature.md`). **This branch (`step8-history-compression`)
+is step 8: long conversations are compressed into retained facts (Koog `FactRetrieval`) instead
+of being truncated.** Step 7 before it made transfers settle asynchronously — confirming debits the
+sender and queues the transfer as `PENDING`; a scheduled settler credits the recipient after the
+settlement window, and until it does, the transfer can be undone.
 
 > A full, end-to-end scenario walkthrough for the complete application is delivered on
 > completion (after step 10). This README grows one usage section per step; it currently
 > covers **step 1** (money-transfer REST), **step 2** (AI agent chat), **step 3** (agent tools &
 > human-in-the-loop), **step 4** (balance & overdraft protection), **step 5** (durable
-> persistence), **step 6** (OpenTelemetry observability), and **step 7** (async settlement &
-> undo).
+> persistence), **step 6** (OpenTelemetry observability), **step 7** (async settlement &
+> undo), and **step 8** (history compression).
 
 ## Prerequisites
 - **JDK 25** (the Gradle toolchain targets Java 25).
@@ -19,8 +20,10 @@ does, the transfer can be undone.**
   - at runtime, Spring Boot Docker Compose support auto-starts PostgreSQL from `compose.yaml`;
   - in tests, Testcontainers starts a throwaway PostgreSQL.
 - **LLM API keys (step 2+)** — for the `/agent/chat` endpoint, set `ANTHROPIC_API_KEY` and
-  `OPENAI_API_KEY` in your environment (never committed). The app still boots without them;
-  a chat request just returns `503` until at least one provider is configured. Tests never
+  `OPENAI_API_KEY` in your environment (never committed; `.env.example` shows the shape), **and**
+  opt in to live, paid LLM calls with `APP_AGENT_LIVE_LLM=true`. Keys alone are not enough: until
+  the opt-in is set, no provider executor is created. The app still boots without either; a chat
+  request just returns `503` until at least one provider is configured and opted in. Tests never
   call a real LLM — they use Koog's `agents-test` mock executor.
 
 ## Run
@@ -124,20 +127,23 @@ Step 2 adds a conversational endpoint backed by the [Koog](https://docs.koog.ai)
 framework. There are **no tools yet** (those arrive in step 3) — it's a single message in, a
 text reply out, keyed by a `conversationId` so follow-up turns keep context.
 
-**Setup:** export your keys before `./gradlew bootRun`:
+**Setup:** export your keys and the live-LLM opt-in before `./gradlew bootRun` (every chat turn
+from here on is a paid API call):
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
+export APP_AGENT_LIVE_LLM=true   # maps to app.agent.live-llm; without it /agent/chat returns 503
 ```
 
 **LLM configuration.** The Koog starter auto-configures a client + executor per provider whose
-`api-key` is non-blank, plus an aggregate `multiLLMPromptExecutor`. Models are selected in
+`api-key` is non-blank and whose `ai.koog.<provider>.enabled` is true, plus an aggregate
+`multiLLMPromptExecutor`. `application.properties` ties both `enabled` flags to
+`app.agent.live-llm` (default `false`). Models are selected in
 `application.properties` by Koog model id:
 
 | Property | Default | Role |
 |----------|---------|------|
 | `app.agent.anthropic-model` | `claude-sonnet-4-6` | everyday model (feature.md's "Sonnet 5") |
-| `app.agent.anthropic-complex-model` | `claude-opus-4-7` | complex turns (feature.md's "Opus 4.8"); first used in step 4 |
 | `app.agent.openai-fallback-model` | `gpt-5.4` | cross-provider error-fallback |
 
 **Multi-provider fault tolerance.** Two layers, by design:
@@ -294,8 +300,9 @@ future custom strategy graph will emit per-node/subgraph spans automatically —
 
 Observability is **additive**: it's controlled by `app.observability.enabled` (on for local `bootRun`,
 off in tests), so with no OTLP endpoint the app and the test suite run exactly as before. The
-app-scoped OTLP exporter is wrapped (`NonClosingSpanExporter`) so Koog's per-run SDK teardown can't
-shut it down between requests.
+OTLP span and metric exporters are app-scoped beans (`AgentObservabilityConfig`), closed once on
+shutdown; [docs/notes/observability.md](docs/notes/observability.md) explains the per-request SDK
+trade-off and why the earlier `NonClosing*` wrappers were removed.
 
 ```bash
 # 1) Run the app. Spring Boot Docker Compose starts Postgres AND the LGTM stack (compose.yaml).
@@ -310,6 +317,11 @@ curl -s -X POST http://localhost:8080/api/v1/agent/chat \
 #    You'll see a trace per run with child spans for each LLM call and tool call.
 open http://localhost:3000
 ```
+
+The same traces and metrics are readable with `curl` through Grafana's datasource proxy (no login),
+e.g. `curl -s -G http://localhost:3000/api/datasources/proxy/uid/tempo/api/search --data-urlencode
+'q={resource.service.name="money-transfer-agent"}'`; see
+[docs/notes/observability.md](docs/notes/observability.md#reading-traces-and-metrics-from-a-terminal-agents-included).
 
 > Point at a different backend by changing `app.observability.otlp-endpoint`. Koog also ships
 > one-line adapters for **Langfuse** and **W&B Weave** (`addLangfuseExporter`/`addWeaveExporter`) if

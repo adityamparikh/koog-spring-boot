@@ -9,12 +9,6 @@ import dev.aparikh.moneytransfer.agent.hitl.PendingInteraction
 import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionRepository
 import dev.aparikh.moneytransfer.agent.hitl.PendingInteractionStore
 import dev.aparikh.moneytransfer.agent.hitl.StagedTransfer
-import java.math.BigDecimal
-import java.time.Instant
-import java.util.UUID
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
-import javax.sql.DataSource
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -29,6 +23,12 @@ import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import java.math.BigDecimal
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import javax.sql.DataSource
 
 /**
  * Proves the step-5 Koog-native persistence against **real PostgreSQL** (Testcontainers + Flyway):
@@ -47,9 +47,13 @@ import org.testcontainers.utility.DockerImageName
 class AgentPersistenceIT {
 
     @Autowired lateinit var chatHistory: ChatHistoryProvider
+
     @Autowired lateinit var pending: PendingInteractionStore
+
     @Autowired lateinit var pendingRepo: PendingInteractionRepository
+
     @Autowired lateinit var agentService: AgentService
+
     @Autowired lateinit var dataSource: DataSource
 
     companion object {
@@ -60,7 +64,13 @@ class AgentPersistenceIT {
     }
 
     private fun confirmation(amount: String) = PendingInteraction.Confirmation(
-        StagedTransfer(senderAccountId = 1, recipientAccountId = 2, recipientDisplay = "Alice Smith", amount = BigDecimal(amount), purpose = "lunch"),
+        StagedTransfer(
+            senderAccountId = 1,
+            recipientAccountId = 2,
+            recipientDisplay = "Alice Smith",
+            amount = BigDecimal(amount),
+            purpose = "lunch",
+        ),
     )
 
     @Test
@@ -147,6 +157,9 @@ class AgentPersistenceIT {
 
         val transcript = chatHistory.load(id.toString())
         assertTrue(transcript.any { it is Message.User && it.textContent().contains("cancel") }, "user turn missing: $transcript")
-        assertTrue(transcript.any { it is Message.Assistant && it.textContent().contains("cancelled") }, "assistant turn missing: $transcript")
+        assertTrue(
+            transcript.any { it is Message.Assistant && it.textContent().contains("cancelled") },
+            "assistant turn missing: $transcript",
+        )
     }
 }

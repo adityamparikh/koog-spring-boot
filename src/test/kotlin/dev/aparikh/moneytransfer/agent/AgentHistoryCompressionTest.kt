@@ -15,10 +15,10 @@ import dev.aparikh.moneytransfer.transfer.TransferProperties
 import dev.aparikh.moneytransfer.transfer.TransferService
 import io.mockk.every
 import io.mockk.mockk
-import java.math.BigDecimal
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import java.math.BigDecimal
 
 /**
  * Step 8: proves [AgentService]'s `turnStrategy` swap — `singleRunStrategy()` when history

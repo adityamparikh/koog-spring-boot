@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "ask": [
+      "Bash(./gradlew bootRun:*)",
+      "Bash(*APP_AGENT_LIVE_LLM=true*)",
+      "Bash(*app.agent.live-llm=true*)",
+      "Bash(curl *localhost:8080/api/v1/agent/*)",
+      "Bash(docker compose down:*)",
+      "Bash(git push:*)",
+      "Edit(src/main/resources/db/migration/V1__init.sql)",
+      "Edit(src/main/resources/db/migration/V2__seed.sql)",
+      "Edit(src/main/resources/db/migration/V3__agent_persistence.sql)",
+      "Edit(src/main/resources/db/migration/V4__async_settlement.sql)"
+    ]
+  }
+}

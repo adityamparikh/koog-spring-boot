@@ -81,7 +81,8 @@ Global conventions (from `docs/project.md`): Kotlin + **Spring Boot 3.5.x** (lat
 stable in that line — chosen for Koog Spring Boot starter compatibility, resolving OQ-1),
 Gradle Kotlin DSL with the version catalog (`gradle/libs.versions.toml`) as the **single
 source of truth for all versions and dependency coordinates** (no inline version strings
-or `extra` properties in `build.gradle.kts` — resolving OQ-2), modular-by-feature packages
+or `extra` properties in `build.gradle.kts` — resolving OQ-2; the single exception since
+step 5 is the `kotlin-serialization.version` BOM override, see `docs/project.md`), modular-by-feature packages
 under `dev.aparikh.moneytransfer`, REST base path `/api/v1`, central `@RestControllerAdvice`
 error handling (RFC 7807 `ProblemDetail`), constructor injection + immutable Kotlin, and
 "latest and greatest" stable library versions declared in the catalog. A Swagger/OpenAPI
@@ -451,6 +452,10 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 - **Security:** `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (and any DB creds) come from env/config, never committed.
   Money-moving endpoints validate inputs; note that authentication is not yet in scope
   (flagged in `docs/project.md`).
+- **Cost:** real LLM calls are opt-in. Provider executors are created only when
+  `app.agent.live-llm=true` (env `APP_AGENT_LIVE_LLM`, default `false`), so API keys alone never
+  cause a paid call; without the opt-in `/api/v1/agent/chat` returns `503`. Tests and CI never set
+  it and use Koog's mock executor (`LiveLlmOptInTest`, `AgentAutoConfigurationTest`).
 - **Correctness:** money uses `BigDecimal` mapped to SQL `NUMERIC`; no floating-point money
   math. Transfers are `@Transactional` and concurrency-safe via an atomic conditional
   `UPDATE … WHERE balance >= :amount` (no read-modify-write); balances never go negative;
@@ -560,3 +565,4 @@ strategies, checkpointing, and rollback from steps 1–9 remain functionally unc
 | 2026-07-03 | Expanded FR-15 (step 6 observability): Koog OpenTelemetry feature installed in the shared agent builder (strategy-agnostic, so a future custom graph yields node/subgraph spans for free) + Spring Actuator/Micrometer OTLP export to the LGTM stack; added AC-19b/AC-19c and a no-op-without-endpoint safety rule. Koog OTel module confirmed transitive via `koog-agents`. |
 | 2026-07-04 | Step 7 redesigned: async settlement (FR-20 — `PENDING → SETTLED\|CANCELLED\|FAILED`, `@Scheduled` settler, `app.transfer.settlement-delay`); undo restricted to pending transfers, settled is irreversible (FR-16 rewritten); agent tools `undoLastTransfer`/`getRecentTransfers` via the existing confirm gate (FR-21); advisory balance hint (FR-22). AC-20 rewritten; AC-30–33 added. |
 | 2026-07-04 | Added the technology-free **Transfer Lifecycle (domain view)** section (L0–L10) mapping each domain step to its FR or out-of-scope decision; made explicit that step 7 splits the single debit+credit transaction into debit-and-record (confirm) + credit (settlement). Noted step 7 stays on `singleRunStrategy` (no custom graph). |
+| 2026-11-20 | Added the **Cost** NFR: live LLM calls need the explicit `app.agent.live-llm` opt-in (default off). Noted the `kotlin-serialization.version` `extra` override as the one exception to OQ-2. |

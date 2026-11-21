@@ -14,6 +14,12 @@ koogSpringBootStarter = "1.0.0-beta"
 # (koog gradle.properties: opentelemetry-jvm = 1.61.0), so our OTLP exporter matches Koog's
 # transitive OTel SDK. Imported as a platform/BOM; member artifacts inherit this version.
 opentelemetry = "1.61.0"
+# Static analysis + formatting (wired into `./gradlew check`, so `./gradlew build` runs them).
+# detekt 2.x is the line that supports Kotlin 2.3 (1.23.x stops at Kotlin 2.0); it is still
+# -alpha, like the Koog starter above. Bump deliberately and re-run `./gradlew detekt`.
+detekt = "2.0.0-alpha.6"
+spotless = "8.11.0"
+ktlint = "1.8.0"
 
 [libraries]
 # Spring Boot starters (versions managed by the Spring Boot BOM / plugin).
@@ -72,3 +78,5 @@ kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotl
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
 spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

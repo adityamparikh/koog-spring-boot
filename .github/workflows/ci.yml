@@ -1,0 +1,49 @@
+# Pre-merge gate: the same single command an agent or developer runs locally.
+# `./gradlew build` = compile + detekt + spotlessCheck (ktlint) + all tests, including the
+# Testcontainers ITs (ubuntu-latest has Docker, so nothing is skipped here).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # No LLM keys exist in CI and the live-LLM opt-in stays off: tests use Koog's mock executor,
+      # so a pull request can never spend money on Anthropic or OpenAI.
+      APP_AGENT_LIVE_LLM: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      # Validates gradle-wrapper.jar against Gradle's published checksums and caches dependencies.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Build, lint and test
+        run: ./gradlew build --console=plain
+
+      - name: Upload test and lint reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports
+          path: |
+            build/reports/tests/
+            build/reports/detekt/
+          retention-days: 7
